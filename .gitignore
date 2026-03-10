@@ -61,5 +61,5 @@ docker-compose.override.yml
 # GitLab CI (no longer used)
 .gitlab-ci.yml
 
-# GitHub internal
-.github/
+# GitHub (keep workflows, exclude other internal files)
+.github/ruleset.json
