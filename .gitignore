@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+
+# Database
+data/*.db
+data/*.sqlite
+*.db
+
+# Data 
+# Ignore all data (keep placeholders)
+data/**
+!data/**/.gitkeep
+
+
+# Environments
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+.obsidian/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Non-Essential Dev Scripts
+scripts/
+notes/
+Project Docs/
+
+# Data Files (Keep structure, ignore content)
+data/papers/Papers/*
+!data/papers/Papers/.gitkeep
+data/*.tar.gz
+
+# Secrets
+API_KEY.txt
+.env

@@ -1,0 +1,21 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+
+# Data (Sensitive & Large)
+data/
+*.db
+*.sqlite
+
+# Environments
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
