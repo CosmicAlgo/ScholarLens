@@ -24,4 +24,3 @@ class Config:
     def set_limit(cls, new_limit: int):
         cls.ARXIV_FETCH_LIMIT = new_limit
 
-# Note to myself: Use specific configs for Dev vs Prod

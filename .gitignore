@@ -1,17 +1,16 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
 
 # Database
 data/*.db
 data/*.sqlite
 *.db
 
-# Data 
-# Ignore all data (keep placeholders)
+# Data (keep placeholders)
 data/**
 !data/**/.gitkeep
-
 
 # Environments
 venv/
@@ -30,16 +29,32 @@ Thumbs.db
 # Logs
 *.log
 
-# Non-Essential Dev Scripts
+# Non-essential dev scripts
 scripts/
 notes/
-Project Docs/
 
-# Data Files (Keep structure, ignore content)
+# Data files
 data/papers/Papers/*
 !data/papers/Papers/.gitkeep
 data/*.tar.gz
+data/embeddings/
 
 # Secrets
 API_KEY.txt
 .env
+
+# Debug files
+debug_*.py
+
+# Ruff / Pytest caches
+.ruff_cache/
+.pytest_cache/
+
+# Docker overrides (local only)
+docker-compose.override.yml
+
+# GitLab CI (no longer used)
+.gitlab-ci.yml
+
+# GitHub internal
+.github/

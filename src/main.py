@@ -20,7 +20,7 @@ def main():
     db = ResearchDatabase(Config.DB_PATH)
     graph_db = GraphDatabase() 
     
-    # 2. Run Pipeline (Refactored)
+    # 2. Run ingestion pipeline
     papers, _ = run_ingestion_pipeline(db)
     
     # 3. Interactive CLI

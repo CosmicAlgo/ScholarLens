@@ -19,7 +19,7 @@ services:
     volumes:
       # Mount data for persistence
       - ./data:/app/data
-      # Mount source code for "Hot Reloading" (Code updates instantly)
+      # Mount source code for live reloading during development
       - ./src:/app/src
       # Mount scripts for diagnostics
       - ./scripts:/app/scripts

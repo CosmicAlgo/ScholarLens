@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 import spacy
 
-# Base Class for Polymorphism (Future-proofing for RSS/Web)
+# Base class for data source implementations
 class DataSource(ABC):
     @abstractmethod
     def load_data(self) -> List[Dict[str, Any]]:
