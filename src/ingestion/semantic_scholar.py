@@ -57,7 +57,7 @@ class SemanticScholarClient:
         nlp = None
         try:
             nlp = spacy.load("en_core_web_sm")
-        except:
+        except Exception:
             pass
 
         for p in raw_papers:
@@ -87,7 +87,7 @@ class SemanticScholarClient:
                     seen_ents = {clean_query.lower()}
                     for ent in doc.ents:
                         if ent.label_ in ['PERSON', 'ORG'] and ent.text.lower() not in seen_ents:
-                             if len(ent.text) > 2 and "\n" not in ent.text and not ent.text.lower() in ["the", "abstract"]:
+                             if len(ent.text) > 2 and "\n" not in ent.text and ent.text.lower() not in ["the", "abstract"]:
                                  entities.append({"text": ent.text, "label": ent.label_})
                                  seen_ents.add(ent.text.lower())
                 except Exception:

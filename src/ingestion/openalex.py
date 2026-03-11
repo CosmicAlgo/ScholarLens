@@ -4,7 +4,7 @@ Docs: https://docs.openalex.org/
 """
 import requests
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict
 
 class OpenAlexClient:
     """Client for querying the OpenAlex scholarly works catalog."""

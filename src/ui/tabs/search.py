@@ -159,9 +159,8 @@ def render_search_tab(db, graph_db):
         results = []
         
         # Determine Sort Order for SQL
-        sort_sql = "ORDER BY p.year DESC" # Default
         if sort_option == "Relevance":
-            sort_sql = "ORDER BY p.id DESC" # Proxy for newest fetch
+            pass # Proxy for newest fetch
         
         # DB Query Logic - ALWAYS use Semantic Search
         source_filter = online_sources  # User's selected sources

@@ -1,7 +1,5 @@
 import streamlit as st
 import requests
-import graphviz
-from src.processing.query_engine import QueryEngine
 
 def render_graph_tab(graph_db):
     """
@@ -174,7 +172,7 @@ def render_graph_tab(graph_db):
                                  end = int(match.group(2))
                                  new_end = min(end, 4)
                                  return f"*{start}..{new_end}"
-                             except: return match.group(0)
+                             except Exception: return match.group(0)
                          cypher = re.sub(r"\*(\d*)\.\.(\d+)", reduce_hops, cypher)
                          
                          # FIX: Rename duplicate columns in RETURN clause

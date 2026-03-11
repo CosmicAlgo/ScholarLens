@@ -8,9 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from src.config import Config
 from src.storage.db import ResearchDatabase
 from src.storage.graph_db import GraphDatabase
-from src.ingestion.arxiv import ArxivIngestor
 from src.ingestion.semantic_scholar import SemanticScholarClient
-from src.processing.query_engine import QueryEngine
 
 # Page Config
 st.set_page_config(page_title="Timeline Explorer", page_icon="🧬", layout="wide")
@@ -41,14 +39,12 @@ def main():
     # FORCE RELOAD S2 CLIENT IF STALE
     # (Fixes 'unexpected keyword argument sort' error)
     import inspect
-    from src.ingestion.semantic_scholar import SemanticScholarClient
     try:
         sig = inspect.signature(SemanticScholarClient.search_normalized)
         if 'sort' not in sig.parameters:
             import importlib
             import src.ingestion.semantic_scholar
             importlib.reload(src.ingestion.semantic_scholar)
-            from src.ingestion.semantic_scholar import SemanticScholarClient # Update global ref locally
             st.toast("System: Reloaded Semantic Scholar Module", icon="🔄")
     except Exception:
         pass
@@ -58,7 +54,6 @@ def main():
     import importlib
     import src.processing.query_engine
     importlib.reload(src.processing.query_engine)
-    from src.processing.query_engine import QueryEngine
     # st.toast("System: Reloaded Query Engine", icon="🧠")
 
     # sidebar metrics (keep these)
@@ -66,14 +61,14 @@ def main():
     try:
         total_papers = st.session_state.db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
         st.sidebar.metric("📚 Library Size", total_papers)
-    except Exception as e:
+    except Exception:
         # Re-try init if error persists (fallback)
         try:
              st.session_state.db = ResearchDatabase(Config.DB_PATH)
              total_papers = st.session_state.db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
              st.sidebar.metric("📚 Library Size", total_papers)
 
-        except:
+        except Exception:
              st.sidebar.error("Database unavailable")
 
 
@@ -88,7 +83,8 @@ def main():
         try:
              # Clean Graph
              st.session_state.graph_db.driver.execute_query("MATCH (n) DETACH DELETE n")
-        except: pass
+        except Exception:
+            pass
         
         # Trigger Rescan Automatically?
         st.toast("Database Wiped! Rescanning library...", icon="🧹")

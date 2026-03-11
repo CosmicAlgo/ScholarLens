@@ -1,5 +1,4 @@
 import os
-import time
 from src.config import Config
 from src.ingestion.loader import PDFIngestor
 from src.storage.db import ResearchDatabase

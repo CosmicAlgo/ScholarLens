@@ -3,7 +3,6 @@ Unit tests for the Embedding Service.
 Tests semantic search and similarity computation.
 """
 import pytest
-from typing import List, Dict
 
 
 class TestEmbeddingService:

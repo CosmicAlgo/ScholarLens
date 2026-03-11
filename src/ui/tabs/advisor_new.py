@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 from src.processing.query_engine import QueryEngine
 from src.ingestion.arxiv import ArxivIngestor
 from src.ingestion.semantic_scholar import SemanticScholarClient
@@ -223,7 +222,7 @@ def render_advisor_tab(db, graph_db):
                         local_path = pdf_url
                 
                 if local_path:
-                    st.success(f"📂 **Local File Available**")
+                    st.success("📂 **Local File Available**")
                     try:
                         with open(local_path, "rb") as f:
                             bdata = f.read()

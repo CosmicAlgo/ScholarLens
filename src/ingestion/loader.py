@@ -21,7 +21,7 @@ class PDFIngestor(DataSource):
         # Load Spacy for NER
         try:
             self.nlp = spacy.load("en_core_web_sm")
-        except:
+        except Exception:
             print("Warning: Spacy model 'en_core_web_sm' not found. NER disabled.")
             self.nlp = None
         
@@ -90,7 +90,7 @@ class PDFIngestor(DataSource):
                             
                             import datetime
                             candidates = []
-                            current_year = datetime.datetime.now().year
+                            datetime.datetime.now().year
 
                             # Pattern A: Explicit Metadata in Text (Score: 10)
                             # Matches: "Published: 2021", "12 May 2021", "Copyright 2021"

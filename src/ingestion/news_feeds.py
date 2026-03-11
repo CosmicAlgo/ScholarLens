@@ -130,7 +130,7 @@ class NewsFeedClient:
             from time import mktime
             published_ts = mktime(time_struct)
             return self._time_ago(int(published_ts))
-        except:
+        except Exception:
             return "recently"
     
     def _clean_summary(self, html_summary: str) -> str:

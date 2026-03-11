@@ -21,7 +21,7 @@ class ArxivIngestor(DataSource):
         # Load Spacy for NER
         try:
             self.nlp = spacy.load("en_core_web_sm")
-        except:
+        except Exception:
             self.nlp = None
 
     def load_data(self) -> List[Dict[str, Any]]:
@@ -54,7 +54,7 @@ class ArxivIngestor(DataSource):
                 try:
                     dt = datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ")
                     year = dt.year
-                except:
+                except (ValueError, TypeError):
                     year = "Unknown"
 
                 # Extract Authors
@@ -90,7 +90,7 @@ class ArxivIngestor(DataSource):
                                 if len(ent.text) > 2 and "\n" not in ent.text:
                                     entities.append({"text": ent.text, "label": ent.label_})
                                     seen_ents.add(ent.text.lower())
-                    except Exception as e:
+                    except Exception:
                         pass # Silent fail for NER
 
                 papers.append({

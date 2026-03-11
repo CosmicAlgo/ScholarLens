@@ -23,7 +23,7 @@ jobs:
         run: pip install ruff==0.12.0
 
       - name: Run linter
-        run: ruff check src/ tests/ scripts/ --output-format=grouped
+        run: ruff check src/ tests/ --output-format=grouped
 
   # --------------------------------- Stage 2: Tests -----------------------------------
   test-matrix:

@@ -1,10 +1,8 @@
 import sqlite3
-import json
 import os
 from typing import List, Dict, Any
 
 import re
-from datetime import datetime
 
 def recover_year(title: str, text: str = "", doi: str = None) -> Any:
     """

@@ -1,5 +1,4 @@
 from typing import List, Dict, Any
-from collections import Counter
 
 class ResearchMetrics:
     """

@@ -320,7 +320,8 @@ class QueryEngine:
                 # But as failsafe, remove common chatty prefixes.
                 if ":" in raw: raw = raw.split(":")[-1].strip()
                 return raw
-        except: return user_query
+        except Exception:
+            return user_query
         return user_query
 
     def expand_query_fast(self, query: str) -> List[str]:
@@ -387,7 +388,8 @@ Example for "Reinforcement Learning": ["Reinforcement Learning", "Q-Learning", "
                 text = resp.json()['response'].strip().upper()
                 if "RESEARCH" in text: return "RESEARCH"
                 return "QA"
-        except: return "RESEARCH" # Default to action
+        except Exception:
+            return "RESEARCH"  # Default to action
         return "RESEARCH"
 
     def generate_cited_summary(self, papers: List[Dict], topic: str) -> str:
