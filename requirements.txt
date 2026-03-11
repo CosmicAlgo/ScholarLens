@@ -1,21 +1,18 @@
-spacy==3.3.1
-sentence-transformers>=2.2.2 
+# NLP & Embeddings
+spacy>=3.3.1,<4.0
+sentence-transformers>=2.2.2
 numpy<2.0
-pandas==1.4.3
+
+# Data
+pandas>=1.4.3
 
 # PDF Processing
-pdf2docx==0.5.5
-python-docx==0.8.10
-simplify-docx==0.1.1
-PyMuPDF==1.20.1
-openpyxl==3.0.10
+PyMuPDF>=1.20.1
+openpyxl>=3.0.10
 
 # Testing
 pytest
 pytest-cov
-
-# Interaction
-prompt-toolkit==3.0.30
 
 # Database
 neo4j>=5.14.0
@@ -26,9 +23,10 @@ plotly
 altair
 graphviz
 streamlit-agraph
-watchdog # For auto-reload
+watchdog
 
-# External APIs (no auth required)
+# External APIs
+requests
 wikipedia-api
 feedparser
 newspaper3k
