@@ -1,8 +1,3 @@
-# Local-only (never push to remote)
-COMMERCIAL_PLAN.md
-.agents/
-notes/
-
 # Python
 __pycache__/
 *.pyc
@@ -45,7 +40,6 @@ data/*.tar.gz
 data/embeddings/
 
 # Secrets
-API_KEY.txt
 .env
 
 # Debug files
@@ -61,5 +55,5 @@ docker-compose.override.yml
 # GitLab CI (no longer used)
 .gitlab-ci.yml
 
-# GitHub (keep workflows, exclude other internal files)
+# GitHub
 .github/ruleset.json
