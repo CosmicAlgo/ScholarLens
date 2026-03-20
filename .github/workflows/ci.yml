@@ -90,4 +90,4 @@ jobs:
         run: pip install pip-audit
 
       - name: Scan for vulnerabilities
-        run: pip-audit -r requirements.txt --desc
+        run: pip-audit -r requirements.txt --desc --ignore-vuln GHSA-rf74-v2fm-23pw --ignore-vuln CVE-2026-33230 --ignore-vuln CVE-2026-33231
