@@ -180,9 +180,18 @@ class ResearchDatabase:
                  c.execute("INSERT OR IGNORE INTO paper_authors (paper_id, author_id) VALUES (?, ?)",
                            (paper_id, auth_id))
     
-    def search_papers(self, query: str, min_year: int = 1900, max_year: int = 2100, limit: int = 50, sort_sql: str = "ORDER BY p.year DESC") -> List[Dict[str, Any]]:
+    def search_papers(self, query: str, min_year: int = 1900, max_year: int = 2100, limit: int = 50, sort_by: str = "year") -> List[Dict[str, Any]]:
         self.conn.row_factory = sqlite3.Row
         c = self.conn.cursor()
+        
+        # Whitelist sorting to prevent SQL injection
+        ALLOWED_SORTS = {
+            "year": "ORDER BY p.year DESC",
+            "id": "ORDER BY p.id DESC",
+            "title": "ORDER BY p.title ASC",
+            "relevance": "ORDER BY p.year DESC"  # Default
+        }
+        sort_clause = ALLOWED_SORTS.get(sort_by, ALLOWED_SORTS["year"])
         
         # Core Query with Group Concat for Authors and Entities
         # NOTE: GROUP_CONCAT in SQLite is simple.
@@ -199,7 +208,7 @@ class ResearchDatabase:
         WHERE (p.title LIKE ? OR p.abstract LIKE ?)
         AND (p.year >= ? AND p.year <= ?)
         GROUP BY p.id
-        {sort_sql}
+        {sort_clause}
         LIMIT ?
         """
         
@@ -285,10 +294,10 @@ class ResearchDatabase:
         if not ids: return []
 
         # Delete from relational tables first
-        id_list = ",".join(ids)
-        c.execute(f"DELETE FROM paper_authors WHERE paper_id IN ({id_list})")
-        c.execute(f"DELETE FROM paper_entities WHERE paper_id IN ({id_list})")
-        c.execute(f"DELETE FROM papers WHERE id IN ({id_list})")
+        placeholders = ",".join(["?"] * len(ids))
+        c.execute(f"DELETE FROM paper_authors WHERE paper_id IN ({placeholders})", ids)
+        c.execute(f"DELETE FROM paper_entities WHERE paper_id IN ({placeholders})", ids)
+        c.execute(f"DELETE FROM papers WHERE id IN ({placeholders})", ids)
         
         self.conn.commit()
         return deleted_titles
