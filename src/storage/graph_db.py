@@ -7,9 +7,13 @@ class GraphDatabase:
         # Default to Docker service name 'neo4j', fallback to localhost for local dev
         self.uri = os.getenv("NEO4J_URI", "bolt://neo4j:7687") 
         self.user = os.getenv("NEO4J_USER", "neo4j")
-        self.password = os.getenv("NEO4J_PASSWORD", "password123")
+        self.password = os.getenv("NEO4J_PASSWORD")
         self.driver = None
         
+        if not self.password:
+            logging.warning("NEO4J_PASSWORD not set. Knowledge Graph functionality will be disabled.")
+            return
+            
         try:
             self.driver = Neo4jDriver.driver(self.uri, auth=(self.user, self.password))
             self.verify_connection()
