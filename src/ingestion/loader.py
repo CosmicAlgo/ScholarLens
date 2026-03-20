@@ -143,8 +143,13 @@ class PDFIngestor(DataSource):
                                     import json
                                     
                                     url = f"https://api.crossref.org/works/{doi}"
-                                    # User-Agent is polite to avoid 403
-                                    headers = {'User-Agent': 'InsightEngine/1.0 (mailto:research@example.com)'}
+                                    # User-Agent is polite to avoid 403. Skip if no email is set.
+                                    crossref_email = os.getenv("CROSSREF_EMAIL")
+                                    if not crossref_email:
+                                        print("      [-] Skipping CrossRef: CROSSREF_EMAIL not set.")
+                                        raise Exception("CROSSREF_EMAIL not set")
+                                        
+                                    headers = {'User-Agent': f'ScholarLens/1.0 (mailto:{crossref_email})'}
                                     req = urllib.request.Request(url, headers=headers)
                                     with urllib.request.urlopen(req, timeout=3) as response:
                                         data = json.loads(response.read())

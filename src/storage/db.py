@@ -30,7 +30,12 @@ def recover_year(title: str, text: str = "", doi: str = None) -> Any:
             
             # Simple synchronous call (okay for "unknown" edge cases)
             url = f"https://api.crossref.org/works/{doi}"
-            headers = {'User-Agent': 'InsightEngine/1.0 (mailto:research@example.com)'}
+            
+            crossref_email = os.getenv("CROSSREF_EMAIL")
+            if not crossref_email:
+                return "Unknown"
+                
+            headers = {'User-Agent': f'ScholarLens/1.0 (mailto:{crossref_email})'}
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=3) as response:
                 data = json.loads(response.read())
