@@ -1,0 +1,21 @@
+version: '3.8'
+
+# Production override for network hardening
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  app:
+    # Only expose the Streamlit port in production
+    ports:
+      - "8501:8501"
+    environment:
+      - NODE_ENV=production
+
+  neo4j:
+    # Hide Neo4j ports from the public internet (Bolt and HTTP)
+    # They will still be accessible to the 'app' service within the Docker network.
+    ports: []
+
+  ollama:
+    # Hide Ollama API port from the public internet
+    ports: []
