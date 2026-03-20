@@ -73,35 +73,54 @@ def main():
 
 
     st.sidebar.markdown("---")
-    # Improved Reset Logic
-    if st.sidebar.button("⚠️ Reset Database", type="secondary"):
-        st.session_state.db.conn.execute("DELETE FROM papers")
-        st.session_state.db.conn.execute("DELETE FROM authors")
-        st.session_state.db.conn.execute("DELETE FROM entities")
-        st.session_state.db.conn.commit()
+    # Improved Reset Logic (with confirmation)
+    if not st.session_state.get("confirm_reset"):
+        if st.sidebar.button("⚠️ Reset Database", type="secondary"):
+            st.session_state["confirm_reset"] = True
+            st.rerun()
+    else:
+        st.sidebar.warning("⚠️ **DANGER ZONE**")
+        st.sidebar.write("This will wipe all papers, authors, entities, and the knowledge graph.")
+        confirm_input = st.sidebar.text_input("Type 'DELETE' to confirm", key="reset_confirm_val")
         
-        try:
-             # Clean Graph
-             st.session_state.graph_db.driver.execute_query("MATCH (n) DETACH DELETE n")
-        except Exception:
-            pass
+        col1, col2 = st.sidebar.columns(2)
+        if col1.button("Confirm", type="primary"):
+            if confirm_input == "DELETE":
+                # Wipe Relational DB
+                st.session_state.db.conn.execute("DELETE FROM papers")
+                st.session_state.db.conn.execute("DELETE FROM authors")
+                st.session_state.db.conn.execute("DELETE FROM entities")
+                st.session_state.db.conn.commit()
+                
+                try:
+                     # Clean Graph
+                     if st.session_state.graph_db and st.session_state.graph_db.driver:
+                         st.session_state.graph_db.driver.execute_query("MATCH (n) DETACH DELETE n")
+                except Exception:
+                    pass
+                
+                st.toast("Database Wiped! Rescanning library...", icon="🧹")
+                
+                # Immediate Rescan
+                from src.ingestion.loader import PDFIngestor
+                ingestor = PDFIngestor("/app/data/papers/Papers")
+                docs = ingestor.load_data()
+                if docs:
+                    st.session_state.db.add_papers(docs)
+                    for p in docs:
+                        st.session_state.graph_db.sync_paper(p)
+                    st.toast(f"Reset & Rescan Complete! ({len(docs)} papers)", icon="✅")
+                
+                st.session_state["confirm_reset"] = False
+                import time
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.sidebar.error("Invalid confirmation code")
         
-        # Trigger Rescan Automatically?
-        st.toast("Database Wiped! Rescanning library...", icon="🧹")
-        
-        # Immediate Rescan
-        from src.ingestion.loader import PDFIngestor
-        ingestor = PDFIngestor("/app/data/papers/Papers") # Point to the mapped volume
-        docs = ingestor.load_data()
-        if docs:
-            st.session_state.db.add_papers(docs)
-            for p in docs:
-                st.session_state.graph_db.sync_paper(p)
-            st.toast(f"Reset & Rescan Complete! ({len(docs)} papers)", icon="✅")
-        
-        import time
-        time.sleep(1.5)
-        st.rerun()
+        if col2.button("Cancel"):
+            st.session_state["confirm_reset"] = False
+            st.rerun()
 
     # ... (Rescan Button Logic - Keep as manual fallback)
     if st.sidebar.button("🔄 Rescan Library", type="secondary"):
