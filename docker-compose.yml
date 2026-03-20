@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     image: insight-engine
-    container_name: timeline-explorer
+    container_name: scholarlens-app
     environment:
       - PAPERS_DIR=/app/data/papers/Papers
       - DB_PATH=/app/data/research.db

@@ -31,4 +31,4 @@ COPY . /app
 EXPOSE 80
 
 
-CMD ["pytest"]
+CMD ["streamlit", "run", "src/ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
