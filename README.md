@@ -9,6 +9,21 @@ ScholarLens ingests papers from multiple sources (ArXiv, Semantic Scholar, local
 ![Search](https://img.shields.io/badge/Search-Cosine%20Similarity-green)
 ![UI](https://img.shields.io/badge/UI-Streamlit-red)
 
+
+# ScholarLens
+
+ScholarLens grew out of [Timeline-Explorer](https://github.com/CosmicAlgo/Timeline-Explorer), 
+a CLI-based academic research tool I was building independently alongside a university 
+group project. While experimenting with a Streamlit interface branch, the scope expanded 
+significantly — adding a Neo4j graph layer for relationship queries, an AI advisor with 
+intent-based routing, and multi-source ingestion. The divergence became large enough that 
+it warranted its own repository.
+
+Where Timeline-Explorer focuses on NLP pipeline architecture and CLI-driven search, 
+ScholarLens is the visual and graph-native evolution of that same problem: helping 
+researchers find not just papers, but connections between ideas, authors, and topics 
+over time.
+
 ---
 
 ## Features
