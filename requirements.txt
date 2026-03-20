@@ -1,5 +1,6 @@
 # NLP & Embeddings
 spacy>=3.3.1,<4.0
+pydantic>=1.10.0,<2.0.0
 sentence-transformers>=2.2.2
 numpy<2.0
 
