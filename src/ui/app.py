@@ -198,5 +198,32 @@ def main():
     with tab4:
         render_discover_tab()
 
+import hmac
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if hmac.compare_digest(st.session_state["password"], os.getenv("APP_PASSWORD")):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if not os.getenv("APP_PASSWORD"):
+        return True
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show input for password
+    st.text_input(
+        "Password", type="password", on_change=password_entered, key="password"
+    )
+    if "password_correct" in st.session_state:
+        st.error("😕 Password incorrect")
+    return False
+
 if __name__ == "__main__":
-    main()
+    if check_password():
+        main()
