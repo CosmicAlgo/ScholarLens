@@ -27,16 +27,32 @@ export default function Home() {
   return (
     <div className="mx-auto max-w-5xl px-4">
       <section className="pt-16 pb-12 md:pt-24 md:pb-16 max-w-3xl">
-        <p className="text-sm font-medium text-accent-ink">Research trend intelligence · free beta</p>
-        <h1 className="mt-3 text-4xl md:text-5xl font-semibold tracking-tight leading-[1.1]">
-          See where a research field is <em className="not-italic text-accent">really</em> heading.
+        <p className="text-sm font-medium text-accent-ink">The research workspace · free beta</p>
+        <h1 className="mt-3 text-4xl md:text-6xl font-semibold tracking-tight leading-[1.05]">
+          Read, question and build on research, <span className="text-accent">with every claim traced to a page.</span>
         </h1>
-        <p className="mt-4 text-lg text-ink-2 max-w-2xl">
-          Track how topics rise, peak and fade across 250M+ papers. Growth is measured against all of science, so
-          &ldquo;growing&rdquo; means something. AI briefings cite a source for every claim, or the claim is cut.
+        <p className="mt-5 text-lg text-ink-2 max-w-2xl">
+          Open papers side by side, see where a field is really heading, and work with an AI copilot that dispatches
+          agents to read the papers and search 250M+ works, then answers with citations you can click straight to the
+          source page.
         </p>
-        <div className="mt-8 max-w-2xl">
-          <TopicSearch autoFocus />
+        <div className="mt-8 flex flex-wrap gap-3">
+          <Link
+            href="/workspace"
+            className="rounded-xl bg-accent text-white font-medium px-5 h-12 inline-flex items-center hover:opacity-90"
+          >
+            Open the workspace →
+          </Link>
+          <Link
+            href="/about"
+            className="rounded-xl border border-line bg-surface font-medium px-5 h-12 inline-flex items-center hover:border-ink-3"
+          >
+            How it stays trustworthy
+          </Link>
+        </div>
+        <p className="mt-10 text-sm text-ink-3">Or check a field&rsquo;s momentum:</p>
+        <div className="mt-2 max-w-2xl">
+          <TopicSearch />
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {EXAMPLES.map((t) => (

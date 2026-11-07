@@ -19,6 +19,7 @@ export const metadata: Metadata = {
 
 const NAV = [
   { href: "/", label: "Explore" },
+  { href: "/workspace", label: "Workspace" },
   { href: "/compare", label: "Compare" },
   { href: "/ask", label: "Ask" },
   { href: "/about", label: "How it works" },
@@ -30,7 +31,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="min-h-full flex flex-col font-sans">
         <Analytics />
         <header className="border-b border-line bg-surface/80 backdrop-blur sticky top-0 z-20">
-          <div className="mx-auto max-w-5xl px-4 h-14 flex items-center gap-6">
+          <div className="mx-auto max-w-6xl px-4 h-14 flex items-center gap-6">
             <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
               <LensMark />
               ScholarLens
@@ -42,6 +43,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 </Link>
               ))}
             </nav>
+            <span className="flex-1" />
+            <Link
+              href="/workspace"
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg bg-accent text-white text-sm font-medium px-3 h-8 hover:opacity-90"
+            >
+              Open workspace
+            </Link>
           </div>
         </header>
         <main className="flex-1">{children}</main>
