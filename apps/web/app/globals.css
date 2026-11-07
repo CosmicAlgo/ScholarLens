@@ -113,3 +113,16 @@ body {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* Workspace: full-height app shell with a faint technical grid behind the panels. */
+.workspace-bg {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: -1px -1px;
+}
+body:has(.workspace-bg) > footer {
+  display: none;
+}
