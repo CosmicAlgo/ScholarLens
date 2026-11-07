@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+
+jobs:
+  api:
+    name: API (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check scholarlens tests
+      - run: uv run ruff format --check scholarlens tests
+      - run: uv run pytest -q
+
+  harvester:
+    name: Harvester (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/harvester
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/harvester/go.mod
+      - run: go vet ./...
+      - run: go test ./...
