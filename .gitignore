@@ -1,59 +1,43 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.pyc
-*.pyo
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
 
-# Database
-data/*.db
-data/*.sqlite
+# Go
+services/harvester/harvester
+services/harvester/harvester.exe
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.vercel/
+
+# Local data and legacy prototype artefacts (never commit)
+data/
 *.db
+*.npz
+*.pkl
 
-# Data (keep placeholders)
-data/**
-!data/**/.gitkeep
-
-# Environments
-venv/
-env/
-.env
-
-# IDE
+# Local notes / tools
+notes/
+scripts/
+COMMERCIAL_PLAN.md
+.obsidian/
 .vscode/
 .idea/
-.obsidian/
+.agents/
 
-# OS
+# OS / logs
 .DS_Store
 Thumbs.db
-
-# Logs
 *.log
-
-# Non-essential dev scripts
-scripts/
-notes/
-
-# Data files
-data/papers/Papers/*
-!data/papers/Papers/.gitkeep
-data/*.tar.gz
-data/embeddings/
-
-# Secrets
-.env
-
-# Debug files
-debug_*.py
-
-# Ruff / Pytest caches
-.ruff_cache/
-.pytest_cache/
-
-# Docker overrides (local only)
-docker-compose.override.yml
-
-# GitLab CI (no longer used)
-.gitlab-ci.yml
-
-# GitHub
-.github/ruleset.json
