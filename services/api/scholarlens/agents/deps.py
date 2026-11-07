@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol
 
-from .. import openalex
+from .. import ingest, openalex
 from ..search import PaperHit, search_papers
 from ..trends import TrendResult, compute_trend
 from .llm import LLM
@@ -13,6 +13,7 @@ from .llm import LLM
 class Tools(Protocol):
     async def trend(self, query: str, year_from: int, year_to: int) -> TrendResult: ...
     async def search(self, query: str, limit: int, year_from: int | None) -> list[PaperHit]: ...
+    async def ensure_coverage(self, query: str, year_from: int | None) -> int: ...
 
 
 class LiveTools:
@@ -23,6 +24,9 @@ class LiveTools:
 
     async def search(self, query: str, limit: int, year_from: int | None) -> list[PaperHit]:
         return await search_papers(query, limit=limit, year_from=year_from)
+
+    async def ensure_coverage(self, query: str, year_from: int | None) -> int:
+        return await ingest.ensure_coverage(query, year_from)
 
 
 @dataclass

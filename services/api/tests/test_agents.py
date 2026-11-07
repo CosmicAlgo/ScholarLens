@@ -110,6 +110,23 @@ class FakeTools:
         )
         return hits
 
+    async def ensure_coverage(self, query, year_from):
+        return 0
+
+
+class ThinTools(FakeTools):
+    """A topic nobody harvested: search finds nothing until coverage is fetched."""
+
+    def __init__(self):
+        self.fetched = []
+
+    async def search(self, query, limit, year_from):
+        return await super().search(query, limit, year_from) if self.fetched else []
+
+    async def ensure_coverage(self, query, year_from):
+        self.fetched.append(query)
+        return 50
+
 
 @pytest.fixture
 def deps():
@@ -159,3 +176,23 @@ def test_public_result_serialises_trend_objects():
     out = json.loads(json.dumps(_public_result({"trends": {"x": {"label": "X", "result": tr, "insight": {}}}})))
     assert out["trends"]["x"]["result"]["label"] == tr.label
     assert isinstance(out["trends"]["x"]["result"]["points"], list)
+
+
+async def test_scout_fetches_coverage_for_unharvested_topic():
+    from scholarlens.agents.schemas import TopicQuery
+    from scholarlens.agents.scout import scout
+
+    tools = ThinTools()
+    deps = Deps(llm=FakeLLM(), tools=tools, current_year=2026)
+    hits = await scout(TopicQuery(key="x", label="X", query="new topic"), None, deps)
+    assert tools.fetched == ["new topic"] and len(hits) > 0
+
+
+def test_planner_strips_analysis_words_from_queries():
+    from scholarlens.agents.planner import clean_query
+
+    assert clean_query("COVID-19 research trends") == "COVID-19"
+    assert clean_query("graph neural networks literature growth") == "graph neural networks"
+    assert clean_query("deep learning") == "deep learning"
+    assert clean_query("research") == "research"  # never empty
+    assert clean_query("trend analysis of tides") == "trend analysis of tides"  # only trailing words

@@ -22,7 +22,7 @@ from .agents.graph import build_graph
 from .agents.llm import AgentError, make_llm
 from .config import get_settings
 from .db import close_pool, open_pool, pool
-from .search import get_paper, search_papers
+from .search import get_paper, search_with_coverage
 
 log = logging.getLogger("scholarlens")
 
@@ -85,7 +85,7 @@ async def search(
     year_to: int | None = None,
     limit: int = Query(20, ge=1, le=50),
 ):
-    hits = await search_papers(q, limit=limit, year_from=year_from, year_to=year_to)
+    hits = await search_with_coverage(q, limit=limit, year_from=year_from, year_to=year_to)
     return {"query": q, "results": [h.public() for h in hits]}
 
 
@@ -176,7 +176,8 @@ async def create_run(body: RunRequest, x_client_id: str = Header(default="anonym
                         yield {"event": "progress", "data": json.dumps({"node": node, "message": msg})}
             yield {"event": "result", "data": json.dumps(_public_result(state), default=str)}
         except AgentError as e:
-            status, error = "failed", str(e)
+            log.warning("agent run %s failed: %s (cause: %r)", run_id, e, e.__cause__)
+            status, error = "failed", f"{e} ({e.__cause__!r})"[:500]
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
         except Exception as e:  # never leak internals to the client
             log.exception("agent run %s failed", run_id)

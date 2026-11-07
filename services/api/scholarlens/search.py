@@ -11,6 +11,12 @@ from .embeddings import embed_query, to_pgvector
 
 RRF_K = 60
 CANDIDATES = 100
+# Relevance gate. bge-small cosine similarity is compressed: unrelated papers still score 0.50-0.65
+# and on-topic ones 0.80+. A paper qualifies by matching the query's words OR being clearly close in
+# meaning, so a thin database returns few results instead of its nearest unrelated papers.
+MIN_SIMILARITY = 0.75
+# Below this many local hits, fetch the topic's most relevant works from OpenAlex first.
+MIN_LOCAL_HITS = 20
 
 
 @dataclass
@@ -41,6 +47,7 @@ WITH vec AS (
     SELECT id, row_number() OVER (ORDER BY embedding <=> %(qv)s::vector) AS r
     FROM papers
     WHERE embedding IS NOT NULL AND (%(y0)s::int IS NULL OR year >= %(y0)s) AND (%(y1)s::int IS NULL OR year <= %(y1)s)
+      AND embedding <=> %(qv)s::vector <= %(maxdist)s
     ORDER BY embedding <=> %(qv)s::vector
     LIMIT %(cand)s
 ),
@@ -105,6 +112,7 @@ async def search_papers(
         "cand": CANDIDATES,
         "k": RRF_K,
         "lim": limit * 2,
+        "maxdist": 1 - MIN_SIMILARITY,
     }
     async with pool().connection() as conn:
         rows = await (await conn.execute(_SQL, params)).fetchall()
@@ -125,3 +133,15 @@ async def get_paper(paper_id: str) -> dict | None:
             )
         ).fetchone()
     return row
+
+
+async def search_with_coverage(
+    query: str, limit: int = 20, year_from: int | None = None, year_to: int | None = None
+) -> list[PaperHit]:
+    """search_papers, but first pull the topic from OpenAlex if we hold too few relevant papers."""
+    from .ingest import ensure_coverage  # local import: ingest depends on this module's siblings
+
+    hits = await search_papers(query, limit, year_from, year_to)
+    if len(hits) < min(limit, MIN_LOCAL_HITS) and await ensure_coverage(query, year_from):
+        hits = await search_papers(query, limit, year_from, year_to)
+    return hits

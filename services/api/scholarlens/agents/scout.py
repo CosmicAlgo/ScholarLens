@@ -5,7 +5,7 @@ The LLM only proposes alternative phrasings; retrieval itself is the hybrid sear
 
 import asyncio
 
-from ..search import PaperHit, dedupe
+from ..search import MIN_LOCAL_HITS, PaperHit, dedupe
 from .deps import Deps
 from .schemas import SearchQueries, TopicQuery
 
@@ -22,6 +22,11 @@ async def scout(topic: TopicQuery, year_from: int | None, deps: Deps) -> list[Pa
     alt = await deps.llm.structured(tier="fast", system=SYSTEM, prompt=topic.label, schema=SearchQueries)
     queries = [topic.query] + [q for q in alt.queries[:3] if q.strip()]
     results = await asyncio.gather(*(deps.tools.search(q, PER_QUERY, year_from) for q in queries))
+
+    # Thin local coverage (a topic nobody has harvested yet): pull its most relevant works from
+    # OpenAlex once, then search again. Search only returns relevant papers, so this is the signal.
+    if len(results[0]) < MIN_LOCAL_HITS and await deps.tools.ensure_coverage(topic.query, year_from):
+        results = await asyncio.gather(*(deps.tools.search(q, PER_QUERY, year_from) for q in queries))
 
     # Reciprocal-rank merge across phrasings, then drop duplicate records of the same paper.
     scores: dict[str, float] = {}
