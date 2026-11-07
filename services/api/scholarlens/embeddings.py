@@ -15,7 +15,8 @@ from .config import get_settings
 def _model():
     from fastembed import TextEmbedding
 
-    return TextEmbedding(get_settings().embedding_model)
+    s = get_settings()
+    return TextEmbedding(s.embedding_model, cache_dir=s.embedding_cache_dir or None)
 
 
 def embed_query(text: str) -> np.ndarray:

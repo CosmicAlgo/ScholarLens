@@ -4,9 +4,8 @@ Every agent asks for a typed (Pydantic) answer, so agents never parse free text.
 Usage is accumulated per run for cost tracking.
 
 Providers:
-- Gemini (default when GEMINI_API_KEY is set): Google AI Studio free tier, no card needed.
-  Free-tier prompts may be used by Google to improve its products; we only send public paper
-  metadata plus the user's question, and the privacy policy says so.
+- Gemini (default when GEMINI_API_KEY is set). On a billed key, prompts are not used to improve
+  Google's products; on the free tier they may be, so the privacy page must match the key in use.
 - Anthropic (when ANTHROPIC_API_KEY is set and LLM_PROVIDER=anthropic, or no Gemini key).
 """
 

@@ -1,0 +1,8 @@
+# Heroku container deploy for the API (services/api). The web app is deployed to Vercel.
+build:
+  docker:
+    web: services/api/Dockerfile
+release:
+  image: web
+  command:
+    - python -m scholarlens.jobs.migrate

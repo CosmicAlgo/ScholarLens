@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     openalex_cache_ttl_hours: int = 24 * 7
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"  # 384-dim, ONNX via fastembed; fits a 512 MB dyno
+    embedding_cache_dir: str = ""  # set in the Docker image so the model is baked in, not downloaded at boot
 
     # LLM provider: "auto" picks Gemini if GEMINI_API_KEY is set, else Anthropic, else AI reports are off.
     llm_provider: str = "auto"

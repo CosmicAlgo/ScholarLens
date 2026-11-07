@@ -50,3 +50,4 @@ dev = [
 [project.scripts]
 scholarlens-dev = "scholarlens.dev:main"
 scholarlens-embed = "scholarlens.jobs.embed:main"
+scholarlens-migrate = "scholarlens.jobs.migrate:main"
