@@ -38,7 +38,10 @@ async def open_pool() -> AsyncConnectionPool:
             max_size=5,
             kwargs=connect_kwargs(url),
             open=False,
-            check=AsyncConnectionPool.check_connection,  # computes suspend when idle; drop dead conns
+            # Neon suspends idle compute after 5 min, closing its connections. Retire ours sooner
+            # instead of health-checking on every checkout (an extra network round trip per request).
+            max_idle=120,
+            reconnect_timeout=30,
         )
         await _pool.open()
     return _pool
