@@ -6,7 +6,6 @@ Agent endpoint (LLM cost, rate-limited): POST /api/runs, streamed as Server-Sent
 
 import json
 import logging
-import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date
@@ -20,7 +19,7 @@ from sse_starlette.sse import EventSourceResponse
 from . import openalex
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
-from .agents.llm import AgentError, AnthropicLLM
+from .agents.llm import AgentError, make_llm
 from .config import get_settings
 from .db import close_pool, open_pool, pool
 from .search import get_paper, search_papers
@@ -142,7 +141,8 @@ def _public_result(state: dict) -> dict:
 
 @app.post("/api/runs")
 async def create_run(body: RunRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
-    if not (get_settings().anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")):
+    llm = make_llm(get_settings())
+    if llm is None:
         raise HTTPException(503, "AI reports are not enabled on this server yet. Trend and search still work.")
     await _check_quota(x_client_id)
     run_id = uuid.uuid4()
@@ -152,7 +152,6 @@ async def create_run(body: RunRequest, x_client_id: str = Header(default="anonym
             (run_id, body.question, x_client_id),
         )
 
-    llm = AnthropicLLM(get_settings())
     graph = build_graph(Deps(llm=llm, tools=LiveTools()))
 
     async def stream():

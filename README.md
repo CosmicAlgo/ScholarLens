@@ -35,7 +35,7 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Prerequisites: Docker, Go 1.22+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
-cp .env.example .env                 # add your free OpenAlex key (+ Anthropic key for AI reports)
+cp .env.example .env                 # add free OpenAlex + Gemini (AI Studio) keys
 docker compose up -d db              # Postgres + pgvector on :5433, schema auto-applied
 
 # Harvest papers (needs OPENALEX_API_KEY beyond 200 results)

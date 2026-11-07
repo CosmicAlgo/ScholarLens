@@ -60,6 +60,12 @@ marked partial and excluded from fitting (indexing lag).
 
 Out-of-scope questions stop after the Planner, so they cost one cheap call.
 
+**Providers** (`agents/llm.py`): agents depend on a one-method `LLM` protocol
+(`structured(tier, system, prompt, schema)`), so the provider is swappable. Default is
+Gemini on the Google AI Studio free tier (fast tier `gemini-3.5-flash-lite`, strong tier
+`gemini-3.8-flash`, two separate quotas). Anthropic is supported as a paid option.
+A typical run makes 4-10 calls; the global daily cap keeps us under the free quota.
+
 ## Deployment (planned)
 
 - **API + Postgres:** Heroku (student credit): Eco dyno + Essential-0 Postgres (1 GB, pgvector).
