@@ -47,3 +47,10 @@ def test_clusters_separate_groups_and_flag_emerging():
 
 def test_too_few_papers_returns_nothing():
     assert cluster_papers(["a"], [np.ones(4)], [2020], 2026) == []
+
+
+def test_pooler_urls_disable_prepared_statements():
+    from scholarlens.db import connect_kwargs
+
+    assert connect_kwargs("postgresql://u:p@ep-x-pooler.eu.neon.tech/db")["prepare_threshold"] is None
+    assert "prepare_threshold" not in connect_kwargs("postgresql://u:p@localhost:5433/db")

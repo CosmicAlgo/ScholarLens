@@ -41,3 +41,4 @@ COMMERCIAL_PLAN.md
 .DS_Store
 Thumbs.db
 *.log
+.neon

@@ -19,15 +19,26 @@ def _normalise_dsn(url: str) -> str:
     return url.replace("postgres://", "postgresql://", 1)
 
 
+def connect_kwargs(url: str) -> dict:
+    """Behind a transaction-mode pooler (Neon's "-pooler" hosts, PgBouncer) a backend can change
+    between statements, so psycopg's automatic server-side prepared statements must be off."""
+    kw: dict = {"row_factory": dict_row}
+    if "-pooler" in url or "pgbouncer" in url.lower():
+        kw["prepare_threshold"] = None
+    return kw
+
+
 async def open_pool() -> AsyncConnectionPool:
     global _pool
     if _pool is None:
+        url = _normalise_dsn(get_settings().database_url)
         _pool = AsyncConnectionPool(
-            _normalise_dsn(get_settings().database_url),
-            min_size=1,
-            max_size=5,  # Heroku Essential-0 allows 20 connections in total
-            kwargs={"row_factory": dict_row},
+            url,
+            min_size=0,  # serverless Postgres scales to zero; don't pin a connection open
+            max_size=5,
+            kwargs=connect_kwargs(url),
             open=False,
+            check=AsyncConnectionPool.check_connection,  # computes suspend when idle; drop dead conns
         )
         await _pool.open()
     return _pool
