@@ -11,6 +11,7 @@ Providers:
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
 
@@ -42,6 +43,8 @@ class LLM(Protocol):
     provider: str
 
     async def structured(self, *, tier: Tier, system: str, prompt: str, schema: type[T]) -> T: ...
+
+    def stream_text(self, *, tier: Tier, system: str, prompt: str) -> AsyncIterator[str]: ...
 
 
 def _status_error(status: int | None) -> AgentError:
@@ -138,6 +141,52 @@ class GeminiLLM:
         except ValidationError as e:
             raise _Transient("The model returned an invalid answer.") from e
 
+    async def stream_text(self, *, tier: Tier, system: str, prompt: str) -> AsyncIterator[str]:
+        """Plain-text streaming (Copilot answers). Retries only if nothing was produced yet."""
+        model, effort = self._model(tier)
+        for attempt in range(_GEMINI_ATTEMPTS):
+            produced = False
+            final = None
+            try:
+                stream = await self.client.aio.interactions.create(
+                    model=model,
+                    input=prompt,
+                    system_instruction=system,
+                    store=False,
+                    stream=True,
+                    generation_config={"max_output_tokens": _MAX_OUTPUT_TOKENS, "thinking_level": effort},
+                )
+                async for ev in stream:
+                    kind = getattr(ev, "event_type", None)
+                    if kind == "step.delta" and type(ev.delta).__name__ == "TextDelta" and ev.delta.text:
+                        produced = True
+                        yield ev.delta.text
+                    elif kind == "interaction.completed":
+                        final = ev.interaction
+                    elif kind == "error":
+                        code = getattr(getattr(ev, "error", None), "code", None)
+                        raise _classify(code if isinstance(code, int) else None)
+            except AgentError as e:
+                if produced or not isinstance(e, _Transient) or attempt == _GEMINI_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            except Exception as e:
+                status = getattr(e, "status_code", None) or getattr(e, "code", None)
+                err = _classify(status if isinstance(status, int) else None)
+                if produced or not isinstance(err, _Transient) or attempt == _GEMINI_ATTEMPTS - 1:
+                    raise err from e
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            self.usage.calls += 1
+            u = getattr(final, "usage", None)
+            if u is not None:
+                self.usage.input_tokens += u.total_input_tokens or 0
+                self.usage.output_tokens += (u.total_output_tokens or 0) + (u.total_thought_tokens or 0)
+            if final is None and not produced:
+                raise AgentError("The AI provider's response was cut off.")
+            return
+
 
 class _Transient(AgentError):
     """Worth retrying: dropped streams, malformed output, connection errors, server errors."""
@@ -212,6 +261,28 @@ class AnthropicLLM:
         if resp.parsed_output is None:
             raise AgentError("The model returned an invalid answer.")
         return resp.parsed_output
+
+    async def stream_text(self, *, tier: Tier, system: str, prompt: str) -> AsyncIterator[str]:
+        anthropic = self._anthropic
+        model, effort = self._model(tier)
+        try:
+            async with self.client.beta.messages.stream(
+                model=model,
+                max_tokens=_MAX_OUTPUT_TOKENS,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={"effort": effort},
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+                msg = await stream.get_final_message()
+        except anthropic.APIStatusError as e:
+            raise _status_error(e.status_code) from e
+        except anthropic.APIConnectionError as e:
+            raise AgentError("Could not reach the AI provider.") from e
+        self.usage.calls += 1
+        self.usage.input_tokens += msg.usage.input_tokens
+        self.usage.output_tokens += msg.usage.output_tokens
 
 
 # --------------------------------------------------------------------------- selection

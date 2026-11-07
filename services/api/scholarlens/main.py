@@ -9,14 +9,16 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date
+from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import openalex
+from . import fulltext, openalex
+from .agents import copilot
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
 from .agents.llm import AgentError, make_llm
@@ -99,6 +101,118 @@ async def paper(paper_id: str):
     return row
 
 
+# ---------- Full text (open-access PDFs) ----------
+
+
+def _valid_id(paper_id: str) -> str:
+    if not paper_id.startswith("W") or not paper_id[1:].isdigit() or len(paper_id) > 16:
+        raise HTTPException(404)
+    return paper_id
+
+
+@app.get("/api/papers/{paper_id}/pdf")
+async def paper_pdf(paper_id: str):
+    """Streams the open-access PDF for the in-app reader (never stored on our side)."""
+    try:
+        data, _, _ = await fulltext.get_pdf(_valid_id(paper_id))
+    except fulltext.NoPdf:
+        raise HTTPException(404, "No open-access PDF is available for this paper.") from None
+    return Response(
+        data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{paper_id}.pdf"',
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
+@app.post("/api/papers/{paper_id}/fulltext")
+async def paper_fulltext(paper_id: str):
+    """Index the paper's passages for grounded Q&A. Idempotent; returns status, pages and passage count."""
+    return await fulltext.ensure_fulltext(_valid_id(paper_id))
+
+
+# ---------- Copilot (master + parallel workers + streamed, cited answer) ----------
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=6000)
+
+
+class CopilotRequest(BaseModel):
+    message: str = Field(min_length=2, max_length=2000)
+    mode: Literal["ask", "explain", "critique", "brainstorm", "related", "compare"] = "ask"
+    open_papers: list[copilot.OpenPaper] = Field(default_factory=list, max_length=5)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=12)
+
+
+@app.post("/api/copilot")
+async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    llm = make_llm(get_settings())
+    if llm is None:
+        raise HTTPException(503, "AI is not enabled on this server yet. Reading, trends and search still work.")
+    for p in body.open_papers:
+        _valid_id(p.id)
+    await _check_quota(x_client_id, "copilot")
+    run_id = uuid.uuid4()
+    async with pool().connection() as conn:
+        await conn.execute(
+            "INSERT INTO agent_runs (id, question, client_id, kind) VALUES (%s, %s, %s, 'copilot')",
+            (run_id, body.message, x_client_id),
+        )
+    history = "\n".join(f"{t.role}: {t.text[:1500]}" for t in body.history[-6:])
+    graph = copilot.build_dispatcher(Deps(llm=llm, tools=LiveTools()))
+
+    async def stream():
+        status, error, answer, evidence = "done", None, "", []
+        try:
+            state = {
+                "message": body.message,
+                "mode": body.mode,
+                "history": history,
+                "open_papers": [p.model_dump() for p in body.open_papers],
+            }
+            async for update in graph.astream(state, stream_mode="updates"):
+                for delta in update.values():
+                    for ev in (delta or {}).get("events", []):
+                        yield {"event": ev["type"], "data": json.dumps(ev)}
+                    evidence.extend((delta or {}).get("evidence", []))
+            evidence = copilot.dedupe_evidence(evidence)
+            yield {"event": "evidence", "data": json.dumps(evidence, default=str)}
+            async for chunk in copilot.write_answer(
+                llm, message=body.message, mode=body.mode, history=history, evidence=evidence
+            ):
+                answer += chunk
+                yield {"event": "token", "data": json.dumps({"text": chunk})}
+            yield {"event": "verified", "data": json.dumps(copilot.verify_answer(answer, evidence))}
+        except AgentError as e:
+            log.warning("copilot %s failed: %s (cause: %r)", run_id, e, e.__cause__)
+            status, error = "failed", f"{e} ({e.__cause__!r})"[:500]
+            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+        except Exception as e:  # never leak internals to the client
+            log.exception("copilot %s failed", run_id)
+            status, error = "failed", repr(e)[:500]
+            yield {"event": "error", "data": json.dumps({"message": "Something went wrong answering this."})}
+        finally:
+            async with pool().connection() as conn:
+                await conn.execute(
+                    """UPDATE agent_runs SET status=%s, error=%s, report=%s, input_tokens=%s, output_tokens=%s,
+                       finished_at=now() WHERE id=%s""",
+                    (
+                        status,
+                        error,
+                        Jsonb({"answer": answer, "evidence_ids": [e["id"] for e in evidence]}),
+                        llm.usage.input_tokens,
+                        llm.usage.output_tokens,
+                        run_id,
+                    ),
+                )
+
+    return EventSourceResponse(stream())
+
+
 # ---------- Agent runs (LLM cost, rate-limited) ----------
 
 
@@ -106,20 +220,26 @@ class RunRequest(BaseModel):
     question: str = Field(min_length=5, max_length=500)
 
 
-async def _check_quota(client_id: str) -> None:
+async def _check_quota(client_id: str, kind: str = "report") -> None:
     s = get_settings()
+    mine_cap, global_cap, noun = (
+        (s.agent_runs_per_client_per_day, s.agent_runs_global_per_day, "AI reports")
+        if kind == "report"
+        else (s.copilot_per_client_per_day, s.copilot_global_per_day, "Copilot messages")
+    )
     async with pool().connection() as conn:
         row = await (
             await conn.execute(
                 """SELECT count(*) FILTER (WHERE client_id = %s) AS mine, count(*) AS total
-               FROM agent_runs WHERE created_at > now() - interval '1 day' AND status <> 'failed'""",
-                (client_id,),
+               FROM agent_runs
+               WHERE created_at > now() - interval '1 day' AND status <> 'failed' AND kind = %s""",
+                (client_id, kind),
             )
         ).fetchone()
-    if row["total"] >= s.agent_runs_global_per_day:
-        raise HTTPException(429, "ScholarLens has hit today's AI budget. Trend and search still work.")
-    if row["mine"] >= s.agent_runs_per_client_per_day:
-        raise HTTPException(429, f"You've used today's {s.agent_runs_per_client_per_day} AI reports. Back tomorrow!")
+    if row["total"] >= global_cap:
+        raise HTTPException(429, "ScholarLens has hit today's AI budget. Reading, trends and search still work.")
+    if row["mine"] >= mine_cap:
+        raise HTTPException(429, f"You've used today's {mine_cap} {noun}. Back tomorrow!")
 
 
 def _public_result(state: dict) -> dict:

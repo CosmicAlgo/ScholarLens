@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Cost guardrails
     agent_runs_per_client_per_day: int = 5
     agent_runs_global_per_day: int = 100  # keep under the free-tier daily request quota
+    # Copilot messages are lighter (2 LLM calls each) and frequent; separate budget.
+    copilot_per_client_per_day: int = 40
+    copilot_global_per_day: int = 600
 
     cors_origins: list[str] = ["http://localhost:3000"]
 
