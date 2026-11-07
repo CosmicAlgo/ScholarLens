@@ -86,3 +86,17 @@ def test_passages_keep_page_numbers_and_sentence_boundaries():
     out = split_passages(pages, size=300)
     assert all(p in (2, 3) for p, _ in out) and out[0][0] == 2 and out[-1][0] == 3
     assert all(t.endswith(".") for _, t in out)
+
+
+async def test_read_paper_falls_back_to_abstract_when_no_pdf():
+    class NoPdf(FakeFulltext):
+        async def ensure_fulltext(self, pid):
+            return {"status": "no_pdf", "pages": None, "passages": 0}
+
+    graph = build_dispatcher(
+        Deps(llm=PlannerLLM([Job(kind="read_paper", target="W5", query="x")]), tools=FakeTools(), current_year=2026),
+        fulltext=NoPdf(),
+    )
+    final = await graph.ainvoke({"message": "q", "mode": "explain", "open_papers": [{"id": "W5", "title": "T"}]})
+    assert [e["id"] for e in final["evidence"]] == ["P:W5"]
+    assert final["evidence"][0]["abstract"] == "We study X." and final["evidence"][0]["flags"] == ["preprint"]

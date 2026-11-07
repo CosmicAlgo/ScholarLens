@@ -113,6 +113,13 @@ class FakeTools:
     async def ensure_coverage(self, query, year_from):
         return 0
 
+    async def paper(self, paper_id):
+        return {
+            "id": paper_id, "title": "Abstract-only paper", "year": 2024, "venue": "J", "doi": None,
+            "abstract": "We study X.", "cited_by_count": 3, "is_retracted": False, "is_preprint": True,
+            "authors": ["A. Author"],
+        }  # fmt: skip
+
 
 class ThinTools(FakeTools):
     """A topic nobody harvested: search finds nothing until coverage is fetched."""

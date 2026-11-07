@@ -5,7 +5,7 @@ from datetime import date
 from typing import Protocol
 
 from .. import ingest, openalex
-from ..search import PaperHit, search_papers
+from ..search import PaperHit, get_paper, search_papers
 from ..trends import TrendResult, compute_trend
 from .llm import LLM
 
@@ -14,6 +14,7 @@ class Tools(Protocol):
     async def trend(self, query: str, year_from: int, year_to: int) -> TrendResult: ...
     async def search(self, query: str, limit: int, year_from: int | None) -> list[PaperHit]: ...
     async def ensure_coverage(self, query: str, year_from: int | None) -> int: ...
+    async def paper(self, paper_id: str) -> dict | None: ...
 
 
 class LiveTools:
@@ -27,6 +28,9 @@ class LiveTools:
 
     async def ensure_coverage(self, query: str, year_from: int | None) -> int:
         return await ingest.ensure_coverage(query, year_from)
+
+    async def paper(self, paper_id: str) -> dict | None:
+        return await get_paper(paper_id)
 
 
 @dataclass

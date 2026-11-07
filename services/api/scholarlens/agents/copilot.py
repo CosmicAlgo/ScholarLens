@@ -172,9 +172,25 @@ async def _run_job(job: dict, deps: Deps, ft) -> list[dict]:
                 }
                 for r in rows
             ]
-        # No open-access full text: fall back to the abstract.
-        hits = [h for h in await deps.tools.search(q, 30, None) if h.id == pid]
-        return [{**paper_evidence(h), "abstract": (h.abstract or "")[:1200]} for h in hits[:1]]
+        # No open-access full text: fall back to the paper's own record (abstract).
+        row = await deps.tools.paper(pid)
+        if not row:
+            return []
+        flags = [f for f, on in (("retracted", row["is_retracted"]), ("preprint", row["is_preprint"])) if on]
+        return [
+            {
+                "id": f"P:{pid}",
+                "kind": "paper",
+                "title": row["title"],
+                "year": row["year"],
+                "venue": row["venue"],
+                "authors": (row.get("authors") or [])[:3],
+                "cited_by": row["cited_by_count"],
+                "flags": flags,
+                "doi": row["doi"],
+                "abstract": (row["abstract"] or "")[:2000],
+            }
+        ]
     if kind == "search_literature":
         hits = await deps.tools.search(q, 8, None)
         return [{**paper_evidence(h), "abstract": (h.abstract or "")[:600]} for h in hits]
