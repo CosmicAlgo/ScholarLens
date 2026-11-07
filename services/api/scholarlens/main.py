@@ -131,7 +131,10 @@ def _public_result(state: dict) -> dict:
         "plan": state.get("plan"),
         "report": state.get("report"),
         "verification": state.get("verification"),
-        "trends": state.get("trends"),
+        "trends": {
+            k: {**v, "result": v["result"].to_dict() if hasattr(v.get("result"), "to_dict") else v.get("result")}
+            for k, v in (state.get("trends") or {}).items()
+        },
         "landscapes": landscapes,
         "trust": state.get("trust"),
         "evidence": state.get("evidence"),

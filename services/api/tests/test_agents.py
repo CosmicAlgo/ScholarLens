@@ -145,3 +145,17 @@ def test_verifier_keeps_supported_claims_only():
     clean, v = verify(report, evidence)
     assert clean.tldr[0].evidence == ["M:x:a"]  # duplicates collapsed
     assert v.claims_kept == 1 and not v.removed
+
+
+def test_public_result_serialises_trend_objects():
+    import json
+
+    from scholarlens.main import _public_result
+    from scholarlens.trends import compute_trend
+
+    counts = {y: 100 + 10 * i for i, y in enumerate(range(2015, 2025))}
+    base = {y: 1_000_000 for y in counts}
+    tr = compute_trend(counts, base, current_year=2025)
+    out = json.loads(json.dumps(_public_result({"trends": {"x": {"label": "X", "result": tr, "insight": {}}}})))
+    assert out["trends"]["x"]["result"]["label"] == tr.label
+    assert isinstance(out["trends"]["x"]["result"]["points"], list)
