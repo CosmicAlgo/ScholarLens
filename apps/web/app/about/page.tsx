@@ -74,9 +74,9 @@ export default function About() {
             with that ID to monitor cost and quality.
           </li>
           <li>
-            Questions are sent to our AI provider (Google Gemini, paid API) to write the briefing. Under Google&rsquo;s
-            paid API terms these prompts are not used to train or improve Google&rsquo;s models. Please still
-            don&rsquo;t include personal or confidential information.
+            Questions are sent to our AI provider (Google Gemini) to write the briefing. We use Google&rsquo;s free
+            API tier, under which Google may use these prompts to improve its products, so please don&rsquo;t include
+            personal or confidential information.
           </li>
           <li>
             We use privacy-friendly product analytics (PostHog, EU hosting) to count page views and feature use. No session
