@@ -26,7 +26,9 @@ async def run(batch: int) -> int:
                 ).fetchall()
             if not rows:
                 break
-            vectors = await asyncio.to_thread(embed_documents, [paper_text(r["title"], r["abstract"]) for r in rows])
+            vectors = await asyncio.to_thread(
+                embed_documents, [paper_text(r["title"], r["abstract"]) for r in rows], 32
+            )  # bulk job on a big machine
             async with pool().connection() as conn, conn.cursor() as cur:
                 await cur.executemany(
                     "UPDATE papers SET embedding = %s::vector WHERE id = %s",

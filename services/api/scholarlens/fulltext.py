@@ -24,11 +24,13 @@ log = logging.getLogger("scholarlens.fulltext")
 MAX_PDF_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 60
 PASSAGE_CHARS = 900
-_CACHE_BYTES = 40 * 1024 * 1024
+_CACHE_BYTES = 16 * 1024 * 1024  # small: the API runs on 512 MB
 _UA = "ScholarLens/0.2 (research reader; +https://rstackhub.in)"
 
 _pdf_cache: OrderedDict[str, bytes] = OrderedDict()
 _locks: dict[str, asyncio.Lock] = {}
+# One indexing job at a time per server: each briefly needs ~100 MB on top of the model.
+_index_slot = asyncio.Semaphore(1)
 
 
 class NoPdf(Exception):
@@ -127,18 +129,27 @@ def split_passages(pages: list[str], size: int = PASSAGE_CHARS) -> list[tuple[in
 
 
 async def ensure_fulltext(paper_id: str) -> dict:
-    """Index the paper's passages if we haven't yet. Returns {status, pages, passages}."""
+    """Make the paper's passages searchable. Returns {status, pages, passages}.
+
+    Passages are stored immediately and are keyword-searchable at once; their embeddings are
+    computed afterwards in the background (minutes on a 0.1-CPU server), and retrieval blends
+    keyword and semantic matches as the embeddings arrive.
+    """
     async with pool().connection() as conn:
         row = await (
             await conn.execute("SELECT status, pages FROM paper_files WHERE paper_id = %s", (paper_id,))
         ).fetchone()
         if row and row["status"] == "ready":
-            n = (
-                await (
-                    await conn.execute("SELECT count(*) AS n FROM paper_chunks WHERE paper_id = %s", (paper_id,))
-                ).fetchone()
-            )["n"]
-            return {"status": "ready", "pages": row["pages"], "passages": n}
+            counts = await (
+                await conn.execute(
+                    "SELECT count(*) AS n, count(*) FILTER (WHERE embedding IS NULL) AS pending"
+                    " FROM paper_chunks WHERE paper_id = %s",
+                    (paper_id,),
+                )
+            ).fetchone()
+            if counts["pending"]:
+                _schedule_embedding(paper_id)  # resume after a restart
+            return {"status": "ready", "pages": row["pages"], "passages": counts["n"]}
         if row and row["status"] == "no_pdf":
             return {"status": "no_pdf", "pages": None, "passages": 0}
 
@@ -150,7 +161,6 @@ async def ensure_fulltext(paper_id: str) -> dict:
             passages = split_passages(pages)
             if not passages:
                 raise NoPdf("no extractable text (scanned PDF?)")
-            vectors = await asyncio.to_thread(embed_documents, [t for _, t in passages])
         except NoPdf as e:
             await _record(paper_id, "no_pdf", None, None, None, str(e)[:300])
             return {"status": "no_pdf", "pages": None, "passages": 0}
@@ -163,15 +173,51 @@ async def ensure_fulltext(paper_id: str) -> dict:
             await conn.execute("DELETE FROM paper_chunks WHERE paper_id = %s", (paper_id,))
             async with conn.cursor() as cur:
                 await cur.executemany(
-                    "INSERT INTO paper_chunks (paper_id, idx, page, text, embedding) VALUES (%s,%s,%s,%s,%s::vector)",
-                    [
-                        (paper_id, i, p, t, to_pgvector(v))
-                        for i, ((p, t), v) in enumerate(zip(passages, vectors, strict=True))
-                    ],
+                    "INSERT INTO paper_chunks (paper_id, idx, page, text) VALUES (%s,%s,%s,%s)",
+                    [(paper_id, i, p, t) for i, (p, t) in enumerate(passages)],
                 )
         await _record(paper_id, "ready", url or None, lic, len(pages), None)
     _locks.pop(paper_id, None)
+    _schedule_embedding(paper_id)
     return {"status": "ready", "pages": len(pages), "passages": len(passages)}
+
+
+# Background embedding: one paper at a time, small batches, so the server stays responsive.
+_embedding_tasks: dict[str, asyncio.Task] = {}
+EMBED_BATCH = 8
+
+
+def _schedule_embedding(paper_id: str) -> None:
+    task = _embedding_tasks.get(paper_id)
+    if task is None or task.done():
+        _embedding_tasks[paper_id] = asyncio.create_task(_embed_pending(paper_id))
+
+
+async def _embed_pending(paper_id: str) -> None:
+    try:
+        async with _index_slot:
+            while True:
+                async with pool().connection() as conn:
+                    rows = await (
+                        await conn.execute(
+                            "SELECT idx, text FROM paper_chunks WHERE paper_id = %s AND embedding IS NULL"
+                            " ORDER BY idx LIMIT %s",
+                            (paper_id, EMBED_BATCH),
+                        )
+                    ).fetchall()
+                if not rows:
+                    return
+                vectors = await asyncio.to_thread(embed_documents, [r["text"] for r in rows])
+                async with pool().connection() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.executemany(
+                            "UPDATE paper_chunks SET embedding = %s::vector WHERE paper_id = %s AND idx = %s",
+                            [(to_pgvector(v), paper_id, r["idx"]) for r, v in zip(rows, vectors, strict=True)],
+                        )
+    except Exception as e:  # retried the next time the paper is opened
+        log.warning("background embedding failed for %s: %r", paper_id, e)
+    finally:
+        _embedding_tasks.pop(paper_id, None)
 
 
 async def _record(paper_id, status, url, lic, pages, error) -> None:
@@ -186,19 +232,52 @@ async def _record(paper_id, status, url, lic, pages, error) -> None:
         )
 
 
+def _or_query(query: str) -> str:
+    """Words of a natural-language question as an OR tsquery, so any matching term counts."""
+    words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", query)}
+    return " | ".join(sorted(words))[:1000]
+
+
 async def search_passages(paper_ids: list[str], query: str, k: int = 6) -> list[dict]:
-    """Most relevant passages for `query` within the given papers."""
+    """Most relevant passages within the given papers: keyword (BM25-like ts_rank_cd) and semantic
+    (pgvector) rankings fused with reciprocal rank fusion. Works before embeddings exist."""
     if not paper_ids:
         return []
     qv = to_pgvector(await asyncio.to_thread(embed_query, query))
+    sql = """
+    WITH c AS (
+        SELECT paper_id, idx, page, text, embedding FROM paper_chunks WHERE paper_id = ANY(%(ids)s)
+    ),
+    txt AS (
+        SELECT paper_id, idx, row_number() OVER (ORDER BY ts_rank_cd(to_tsvector('english', text), q) DESC) AS r
+        FROM c, to_tsquery('english', %(tq)s) AS q
+        WHERE %(tq)s <> '' AND to_tsvector('english', text) @@ q
+        ORDER BY ts_rank_cd(to_tsvector('english', text), q) DESC
+        LIMIT 30
+    ),
+    vec AS (
+        SELECT paper_id, idx, row_number() OVER (ORDER BY embedding <=> %(qv)s::vector) AS r
+        FROM c WHERE embedding IS NOT NULL
+        ORDER BY embedding <=> %(qv)s::vector
+        LIMIT 30
+    ),
+    fused AS (
+        SELECT paper_id, idx, sum(1.0 / (60 + r)) AS score
+        FROM (SELECT * FROM txt UNION ALL SELECT * FROM vec) u GROUP BY paper_id, idx
+    )
+    SELECT c.paper_id, c.idx, c.page, c.text, p.title, f.score
+    FROM fused f JOIN c USING (paper_id, idx) JOIN papers p ON p.id = c.paper_id
+    ORDER BY f.score DESC LIMIT %(k)s
+    """
     async with pool().connection() as conn:
-        rows = await (
-            await conn.execute(
-                """SELECT c.paper_id, c.idx, c.page, c.text, p.title, 1 - (c.embedding <=> %s::vector) AS sim
-                   FROM paper_chunks c JOIN papers p ON p.id = c.paper_id
-                   WHERE c.paper_id = ANY(%s)
-                   ORDER BY c.embedding <=> %s::vector LIMIT %s""",
-                (qv, paper_ids, qv, k),
-            )
-        ).fetchall()
+        rows = await (await conn.execute(sql, {"ids": paper_ids, "tq": _or_query(query), "qv": qv, "k": k})).fetchall()
+        if not rows:  # nothing matched by keyword and no embeddings yet: return the paper's opening passages
+            rows = await (
+                await conn.execute(
+                    """SELECT c.paper_id, c.idx, c.page, c.text, p.title, 0.0 AS score
+                       FROM paper_chunks c JOIN papers p ON p.id = c.paper_id
+                       WHERE c.paper_id = ANY(%s) ORDER BY c.idx LIMIT %s""",
+                    (paper_ids, k),
+                )
+            ).fetchall()
     return [dict(r) for r in rows]

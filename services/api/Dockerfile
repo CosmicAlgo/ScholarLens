@@ -1,8 +1,8 @@
 # ScholarLens API. Build context is the repository root (see heroku.yml).
 FROM python:3.11-slim AS base
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy \
-    EMBEDDING_CACHE_DIR=/opt/models MIGRATIONS_DIR=/app/db/migrations
+# Hosts give fractional CPUs (Render free: 0.1). ONNX defaults to one thread per host core, which
+# thrashes under a CPU quota: indexing a paper took minutes instead of seconds. Pin it to one thread.
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1     UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy     EMBEDDING_CACHE_DIR=/opt/models MIGRATIONS_DIR=/app/db/migrations     EMBEDDING_THREADS=1 OMP_NUM_THREADS=1
 COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /usr/local/bin/uv
 WORKDIR /app/services/api
 
