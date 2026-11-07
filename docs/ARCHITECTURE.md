@@ -20,7 +20,7 @@
 | `services/api` | Python (FastAPI, LangGraph) | Trend, search and paper endpoints, and the agent pipeline. |
 | `services/api/scholarlens/jobs/embed.py` | Python | Fills missing 384-dim embeddings (fastembed / ONNX). |
 | `db/migrations` | SQL | Postgres + pgvector schema. |
-| `apps/web` | TypeScript (Next.js) | Web front-end *(next phase)*. |
+| `apps/web` | TypeScript (Next.js 16) | Server-rendered, cached topic/compare/paper pages (SEO entry points) and the streamed Ask view. PostHog analytics when configured. |
 
 ## Data flow
 

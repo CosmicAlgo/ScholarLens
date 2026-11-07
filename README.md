@@ -7,7 +7,7 @@ sub-areas emerging inside them, and flags retracted or unreviewed work. Ask a qu
 plain English and a team of single-purpose AI agents writes a briefing in which every
 sentence cites a paper or a computed number. Anything they can't back up is deleted.
 
-> Status: v2 rebuild in progress (API and agents working; web app next).
+> Status: v2 beta. API, agents and web app working locally; deployment next.
 > The original Streamlit prototype is preserved at tag `v1-streamlit`.
 
 ## What makes it different
@@ -26,7 +26,7 @@ sentence cites a paper or a computed number. Anything they can't back up is dele
 | `services/harvester` | Go. OpenAlex → Postgres ingestion |
 | `services/api` | Python, FastAPI + LangGraph. Trends, hybrid search, agent pipeline |
 | `db/migrations` | Postgres + pgvector schema |
-| `apps/web` | Next.js front-end *(next)* |
+| `apps/web` | Next.js 16 front-end: topic pages, compare, Ask (streamed agent runs) |
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -49,7 +49,13 @@ uv run scholarlens-embed
 uv run scholarlens-dev               # http://127.0.0.1:8000/docs
 ```
 
-Try it:
+Web app (in another terminal):
+
+```bash
+cd apps/web && cp .env.example .env.local && npm install && npm run dev   # http://localhost:3000
+```
+
+Try the API directly:
 
 ```bash
 curl "localhost:8000/api/trend?q=diffusion%20models"
