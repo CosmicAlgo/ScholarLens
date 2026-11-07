@@ -16,9 +16,13 @@ Rules:
 - Every claim lists the evidence ids that support it. A claim without evidence will be deleted.
 - Never cite a paper flagged "retracted" as support; you may mention that it was retracted.
 - Prefer numbers from metrics over vague words ("+38%/yr share growth", not "booming").
-- Structure: tldr (2-4 headline claims), then sections such as "Trajectory",
-  "What's emerging inside the field", "Papers to read first", and a comparison section
-  when there are several topics. Skip sections with no evidence.
+- Structure: tldr (2-4 headline claims that answer the question directly), then sections such
+  as "Trajectory", "What's emerging inside the field", "Papers to read first", and a
+  comparison section when there are several topics. Skip sections with no evidence.
+- Never repeat yourself. Sections add detail and interpretation the tldr does not already
+  state; do not restate a tldr claim or reuse the same numbers in a section.
+- Say what the papers in a sub-area actually study (from their names and summaries), not just
+  their size. Mention emergence only when a cluster is flagged emerging.
 - caveats: data limits worth knowing (e.g. preprint share, current year incomplete,
   search coverage is a sample, not the whole literature)."""
 
