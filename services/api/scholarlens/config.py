@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     # Gemini (Google AI Studio free tier). Two models = two separate free quotas.
     gemini_api_key: str = ""
     gemini_fast_model: str = "gemini-3.5-flash-lite"
-    gemini_strong_model: str = "gemini-3.8-flash"
+    # 3.6-flash, not 3.8-flash: on the free tier 3.8 queued ~150 s before answering (2026-11 benchmark).
+    gemini_strong_model: str = "gemini-3.6-flash"
 
     # Anthropic (paid). Set ANTHROPIC_FAST_MODEL=claude-haiku-5-5 for a much lower bill.
     anthropic_api_key: str = ""

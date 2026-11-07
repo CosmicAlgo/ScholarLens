@@ -10,6 +10,7 @@ Providers:
 - Anthropic (when ANTHROPIC_API_KEY is set and LLM_PROVIDER=anthropic, or no Gemini key).
 """
 
+import asyncio
 import os
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
@@ -73,42 +74,84 @@ class GeminiLLM:
         return s.gemini_strong_model, s.llm_strong_effort
 
     async def structured(self, *, tier: Tier, system: str, prompt: str, schema: type[T]) -> T:
+        last: AgentError | None = None
+        for attempt in range(_GEMINI_ATTEMPTS):
+            try:
+                return await self._once(tier, system, prompt, schema)
+            except _Transient as e:
+                last = e
+                await asyncio.sleep(1.5 * (attempt + 1))
+        assert last is not None
+        raise AgentError(str(last)) from last.__cause__
+
+    async def _once(self, tier: Tier, system: str, prompt: str, schema: type[T]) -> T:
         model, effort = self._model(tier)
+        # Streamed: long generations (the writer) exceed the ~60 s idle limit of a plain request.
+        parts: list[str] = []
+        final = None
         try:
-            interaction = await self.client.aio.interactions.create(
+            stream = await self.client.aio.interactions.create(
                 model=model,
                 input=prompt,
                 system_instruction=system,
                 store=False,
+                stream=True,
                 generation_config={"max_output_tokens": _MAX_OUTPUT_TOKENS, "thinking_level": effort},
                 response_format={"type": "text", "mime_type": "application/json", "schema": schema.model_json_schema()},
             )
+            async for ev in stream:
+                kind = getattr(ev, "event_type", None)
+                if kind == "step.delta" and type(ev.delta).__name__ == "TextDelta":
+                    parts.append(ev.delta.text or "")
+                elif kind == "interaction.completed":
+                    final = ev.interaction
+                elif kind == "error":
+                    code = getattr(getattr(ev, "error", None), "code", None)
+                    raise _classify(code if isinstance(code, int) else None)
+        except AgentError:
+            raise
         except Exception as e:  # the SDK raises several error families; map all to a safe message
             status = getattr(e, "status_code", None) or getattr(e, "code", None)
             if not isinstance(status, int):
                 if "connect" in type(e).__name__.lower() or "timeout" in type(e).__name__.lower():
-                    raise AgentError("Could not reach the AI provider.") from e
+                    raise _Transient("Could not reach the AI provider.") from e
                 status = None
-            raise _status_error(status) from e
+            raise _classify(status) from e
 
         self.usage.calls += 1
-        u = getattr(interaction, "usage", None)
+        u = getattr(final, "usage", None)
         if u is not None:
             self.usage.input_tokens += u.total_input_tokens or 0
             self.usage.output_tokens += (u.total_output_tokens or 0) + (u.total_thought_tokens or 0)
 
-        status = getattr(interaction, "status", None)
+        if final is None:
+            raise _Transient("The AI provider's response was cut off.")
+        status = getattr(final, "status", None)
         if status == "incomplete":
             raise AgentError("The model ran out of output space.")
-        if status not in ("completed", None):
+        if status != "completed":
             raise AgentError(f"The model did not finish ({status}).")
-        text = interaction.output_text
+        text = "".join(parts)
         if not text:
-            raise AgentError("The model returned an empty answer.")
+            raise _Transient("The model returned an empty answer.")
         try:
             return schema.model_validate_json(_strip_fences(text))
         except ValidationError as e:
-            raise AgentError("The model returned an invalid answer.") from e
+            raise _Transient("The model returned an invalid answer.") from e
+
+
+class _Transient(AgentError):
+    """Worth retrying: dropped streams, malformed output, connection errors, server errors."""
+
+
+_GEMINI_ATTEMPTS = 3
+
+
+def _classify(status: int | None) -> AgentError:
+    err = _status_error(status)
+    if status is None or status >= 500:
+        return _Transient(str(err))
+    return err
 
 
 def _strip_fences(text: str) -> str:
