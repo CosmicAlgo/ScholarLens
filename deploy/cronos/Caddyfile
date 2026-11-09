@@ -1,0 +1,7 @@
+api.rstackhub.in {
+	encode gzip
+	reverse_proxy api:8000 {
+		# Copilot and reports stream Server-Sent Events: pass every chunk through immediately.
+		flush_interval -1
+	}
+}
