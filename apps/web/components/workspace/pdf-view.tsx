@@ -18,6 +18,9 @@ const COLORS: Record<Highlight["color"], string> = {
   pink: "rgba(236, 72, 153, 0.28)",
 };
 
+// Plain GETs only: range requests would need extra CORS headers on the API.
+const OPTIONS = { disableRange: true, disableStream: true };
+
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -29,7 +32,7 @@ export default function PdfView({
   onPages,
   sourceUrl,
 }: {
-  file: string | ArrayBuffer;
+  file: string | { data: Uint8Array };
   highlights: Highlight[];
   jump: Jump;
   onAction: (a: SelAction, s: PdfSelection, color?: Highlight["color"]) => void;
@@ -47,10 +50,6 @@ export default function PdfView({
   const [error, setError] = useState(false);
   const [sel, setSel] = useState<(PdfSelection & { x: number; y: number }) | null>(null);
 
-  // pdf.js detaches ArrayBuffers it is given, so hand it a copy; keep the object stable per file.
-  const source = useMemo(() => (typeof file === "string" ? file : { data: new Uint8Array(file.slice(0)) }), [file]);
-  // Plain GETs only: range requests would need extra CORS headers on the API.
-  const options = useMemo(() => ({ disableRange: true, disableStream: true }), []);
 
   useEffect(() => {
     const el = scroller.current;
@@ -83,6 +82,12 @@ export default function PdfView({
     return () => io.disconnect();
   }, [numPages, pageH]);
 
+  // Position of a page inside the scroller, independent of which ancestor is the offsetParent.
+  const topOf = (el: HTMLElement) => {
+    const sc = scroller.current!;
+    return el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+  };
+
   const onScroll = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
@@ -91,14 +96,14 @@ export default function PdfView({
     let n = 1;
     for (let i = 0; i < numPages; i++) {
       const s = slots.current[i];
-      if (s && s.offsetTop <= mark) n = i + 1;
+      if (s && topOf(s) <= mark) n = i + 1;
     }
     setCurrent(n);
   }, [numPages]);
 
   const goTo = useCallback((n: number) => {
     const s = slots.current[n - 1];
-    if (s && scroller.current) scroller.current.scrollTo({ top: s.offsetTop - 8, behavior: "smooth" });
+    if (s && scroller.current) scroller.current.scrollTo({ top: topOf(s) - 8, behavior: "smooth" });
   }, []);
 
   // Citation clicked elsewhere: scroll to the page, then to the highlighted passage once its text renders.
@@ -211,8 +216,8 @@ export default function PdfView({
 
       <div ref={scroller} onScroll={onScroll} className="flex-1 min-h-0 overflow-auto bg-surface-2 pdf-scroller">
         <Document
-          file={source}
-          options={options}
+          file={file}
+          options={OPTIONS}
           onLoadSuccess={async (pdf) => {
             setNumPages(pdf.numPages);
             onPages?.(pdf.numPages);

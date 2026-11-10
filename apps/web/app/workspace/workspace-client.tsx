@@ -42,6 +42,7 @@ export function WorkspaceClient() {
   const [focusNonce, setFocusNonce] = useState(0);
   const [matrixStatus, setMatrixStatus] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ text: string; tone: "info" | "bad" } | null>(null);
+  const wide = useWide();
   const abort = useRef<AbortController | null>(null);
   const sRef = useRef(s);
   sRef.current = s;
@@ -319,9 +320,11 @@ export function WorkspaceClient() {
         </div>
       )}
 
+      {wide === false && (
+        <>
       {/* Phones: one pane at a time, switched from a bottom bar within thumb reach */}
-      <div className="md:hidden flex-1 min-h-0 bg-surface">{pane === "library" ? library : pane === "paper" ? reader : copilot}</div>
-      <nav className="md:hidden grid grid-cols-3 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]" aria-label="Workspace panes">
+      <div className="flex-1 min-h-0 bg-surface">{pane === "library" ? library : pane === "paper" ? reader : copilot}</div>
+      <nav className="grid grid-cols-3 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]" aria-label="Workspace panes">
         {(
           [
             ["library", "Library", "M4 5h4v14H4zM10 5h4v14h-4zM16 6l3.5 1-3 12-3.5-1z"],
@@ -346,9 +349,12 @@ export function WorkspaceClient() {
           </button>
         ))}
       </nav>
+        </>
+      )}
 
-      {/* Desktop: three resizable panels */}
-      <div className="hidden md:block flex-1 min-h-0 p-2">
+      {/* Desktop: three resizable panels. Only one layout is mounted, so each PDF loads once. */}
+      {wide && (
+      <div className="flex-1 min-h-0 p-2">
         <Group orientation="horizontal" className="h-full">
           <Panel defaultSize="22" minSize="15" className="rounded-2xl border border-line bg-surface overflow-hidden shadow-sm">
             {library}
@@ -367,8 +373,22 @@ export function WorkspaceClient() {
           </Panel>
         </Group>
       </div>
+      )}
     </div>
   );
+}
+
+/** true on tablets and desktops, false on phones, null before the first client render. */
+function useWide() {
+  const [wide, setWide] = useState<boolean | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const on = () => setWide(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return wide;
 }
 
 function uploadPaper(id: string, title: string, pages: number): OpenPaper {

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getDoc } from "@/lib/docstore";
 import type { Highlight, OpenPaper } from "@/lib/workspace";
 import { pdfUrl } from "@/lib/workspace";
@@ -130,7 +130,9 @@ function PaperView({
     };
   }, [p.id, p.local]);
 
-  const file: string | ArrayBuffer | null = p.local ? local : p.fulltext === "ready" ? pdfUrl(p.id) : null;
+  // A stable source object: pdf.js takes ownership of the bytes, so it gets its own copy.
+  const localSource = useMemo(() => (local ? { data: new Uint8Array(local.slice(0)) } : null), [local]);
+  const file = p.local ? localSource : p.fulltext === "ready" ? pdfUrl(p.id) : null;
   const showPdf = view === "pdf" && file !== null;
   const doi = p.doi ? (p.doi.startsWith("http") ? p.doi : `https://doi.org/${p.doi}`) : null;
 
