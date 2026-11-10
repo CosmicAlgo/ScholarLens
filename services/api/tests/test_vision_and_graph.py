@@ -157,3 +157,13 @@ async def test_connection_map_keeps_shared_foundations(monkeypatch):
     assert kinds["W10"] == "shared" and kinds["W1"] == "open" and kinds["W50"] == "citing"
     edges = {(e["source"], e["target"]) for e in g["edges"]}
     assert ("W1", "W2") in edges and ("W1", "W10") in edges and ("W2", "W10") in edges and ("W50", "W1") in edges
+
+
+class PositionalLLM(VisionLLM):
+    async def structured(self, *, tier, system, prompt, schema, media=None):
+        return Figures(figures=[{"page": 1, "label": "Table 1", "kind": "table", "shows": "s", "takeaway": "t"}])
+
+
+async def test_positional_page_numbers_are_mapped_back_to_real_pages():
+    ev = await read_pdf_figures(Deps(llm=PositionalLLM(), tools=FakeTools()), PdfFulltext(), "W1", "P", "table 1", 2)
+    assert [e["page"] for e in ev] == [choose_pages(PAGES, "table 1", 2)[0]]  # position 1, not page 1

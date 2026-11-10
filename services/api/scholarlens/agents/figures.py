@@ -161,8 +161,13 @@ async def _read(deps: Deps, paper_id: str, title: str, pages: list[int], query, 
         tier="fast", system=SYSTEM, prompt=_prompt(title, pages, query), schema=Figures, media=media
     )
     allowed, seen, ev = set(pages), {}, []
+    # Some replies number the attached pages by position (1, 2, 3) instead of their real numbers.
+    positional = bool(out.figures) and all(f.page not in allowed and 1 <= f.page <= len(pages) for f in out.figures)
     for f in out.figures:
-        page = f.page if f.page in allowed else pages[0] if len(pages) == 1 else None
+        if positional:
+            page = pages[f.page - 1]
+        else:
+            page = f.page if f.page in allowed else pages[0] if len(pages) == 1 else None
         if page is None:
             continue  # the model invented a page number
         seen[page] = seen.get(page, 0) + 1
