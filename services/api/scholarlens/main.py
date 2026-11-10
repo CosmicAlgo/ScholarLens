@@ -19,7 +19,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import citegraph, fulltext, openalex
+from . import citegraph, fulltext, lineage, openalex, smart_search
 from .agents import copilot, figures, matrix, novelty
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
@@ -88,9 +88,15 @@ async def search(
     year_from: int | None = None,
     year_to: int | None = None,
     limit: int = Query(20, ge=1, le=50),
+    smart: bool = False,
 ):
+    """`smart=true`: tolerate typos and vague wording (an LLM may rewrite the query; results are
+    always real catalogue papers, and the rewrite is returned so the UI can show it)."""
+    if smart:
+        out = await smart_search.smart_search(make_llm(get_settings()), q, limit, year_from, year_to)
+        return {"query": q, "interpreted": out["interpreted"], "results": [h.public() for h in out["results"]]}
     hits = await search_with_coverage(q, limit=limit, year_from=year_from, year_to=year_to)
-    return {"query": q, "results": [h.public() for h in hits]}
+    return {"query": q, "interpreted": None, "results": [h.public() for h in hits]}
 
 
 @app.get("/api/papers/{paper_id}")
@@ -440,6 +446,7 @@ async def create_run(body: RunRequest, x_client_id: str = Header(default="anonym
 class PageImage(BaseModel):
     page: int = Field(ge=1, le=2000)
     data: str = Field(max_length=MAX_IMAGE_B64)
+    text: str = Field(default="", max_length=20000, description="the page's text, for caption checks")
 
 
 class FiguresRequest(BaseModel):
@@ -473,7 +480,8 @@ async def paper_figures(body: FiguresRequest, x_client_id: str = Header(default=
     try:
         if body.images:
             imgs = [(im.page, im.data) for im in body.images]
-            items = await figures.read_image_figures(deps, pid, body.title, imgs, body.query)
+            texts = {im.page: im.text for im in body.images if im.text}
+            items = await figures.read_image_figures(deps, pid, body.title, imgs, body.query, texts)
         else:
             items = await figures.read_pdf_figures(deps, fulltext, pid, body.title, body.query, limit=8)
     except AgentError as e:
@@ -509,5 +517,16 @@ async def connection_graph(body: GraphRequest):
     ids = list(dict.fromkeys(_valid_id(i) for i in body.ids))
     try:
         return await citegraph.build(ids)
+    except openalex.OpenAlexError as e:
+        raise HTTPException(502, "OpenAlex is unavailable right now.") from e
+
+
+@app.post("/api/lineage")
+async def topic_lineage(body: GraphRequest):
+    """Where the open papers sit: topics, key terms (first sustained year, early influential papers,
+    trend), related topics and the topics later work carried them into. OpenAlex only, no LLM."""
+    ids = list(dict.fromkeys(_valid_id(i) for i in body.ids))[:5]
+    try:
+        return await lineage.build(ids)
     except openalex.OpenAlexError as e:
         raise HTTPException(502, "OpenAlex is unavailable right now.") from e

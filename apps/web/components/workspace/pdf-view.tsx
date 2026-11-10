@@ -157,19 +157,21 @@ export default function PdfView({
     setCurrent(n);
   }, [numPages]);
 
-  const goTo = useCallback((n: number) => {
-    const s = slots.current[n - 1];
-    if (s && scroller.current) scroller.current.scrollTo({ top: topOf(s) - 8, behavior: "smooth" });
-  }, []);
-
   // Citation clicked elsewhere: scroll to the page, then to the highlighted passage once its text renders.
   const pendingFlash = useRef<number | null>(null);
   useEffect(() => {
     if (!jump || !numPages) return;
     pendingFlash.current = jump.text ? jump.page : null;
-    const t = setTimeout(() => goTo(Math.min(jump.page, numPages)), 50);
-    return () => clearTimeout(t);
-  }, [jump, numPages, goTo]);
+    const n = Math.min(jump.page, numPages);
+    // Jump instantly, then re-check: a long smooth scroll can be cut short while pages render.
+    const land = () => {
+      const s = slots.current[n - 1];
+      const sc = scroller.current;
+      if (s && sc && Math.abs(sc.scrollTop - (topOf(s) - 8)) > 4) sc.scrollTo({ top: topOf(s) - 8 });
+    };
+    const timers = [50, 350, 900].map((ms) => setTimeout(land, ms));
+    return () => timers.forEach(clearTimeout);
+  }, [jump, numPages]);
 
   const flashText = jump?.text ? norm(jump.text) : "";
   const renderText = useCallback(

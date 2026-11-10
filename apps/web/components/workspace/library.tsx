@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import type { Paper, Trend } from "@/lib/api";
+import { ScreenDeck } from "./screen";
+import type { Interpretation, Paper, Trend } from "@/lib/api";
 import { fetchSearch, fetchTrend } from "@/lib/api";
 import { LABELS, pct } from "@/lib/format";
 import type { OpenPaper, WorkspaceState } from "@/lib/workspace";
@@ -13,12 +14,18 @@ export function Library({
   onActivate,
   onUpload,
   notes,
+  onKeep,
+  onUnqueue,
+  onScreened,
 }: {
   state: WorkspaceState;
   onOpen: (p: Paper) => void;
   onActivate: (id: string) => void;
   onUpload: (f: File) => void;
   notes: React.ReactNode;
+  onKeep: (p: Paper) => void;
+  onUnqueue: (id: string) => void;
+  onScreened: (kept: number, total: number, seconds: number) => void;
 }) {
   const [tab, setTab] = useState<"search" | "notes">("search");
   const file = useRef<HTMLInputElement>(null);
@@ -26,25 +33,56 @@ export function Library({
   const [results, setResults] = useState<Paper[] | null>(null);
   const [trend, setTrend] = useState<Trend | null>(null);
   const [busy, setBusy] = useState(false);
+  const [improving, setImproving] = useState(false);
+  const [interp, setInterp] = useState<Interpretation | null>(null);
+  const [asked, setAsked] = useState("");
+  const [screening, setScreening] = useState(false);
   const [err, setErr] = useState("");
+  const run = useRef(0);
 
-  async function search(e?: React.FormEvent, override?: string) {
+  /** Plain results show at once; the smart search (typos, vague wording) replaces them when ready. */
+  async function search(e?: React.FormEvent, override?: string, exact = false) {
     e?.preventDefault();
     const topic = (override ?? q).trim();
     if (topic.length < 2) return;
+    const me = ++run.current;
     setBusy(true);
+    setImproving(!exact);
     setErr("");
     setTrend(null);
-    try {
-      const [s, t] = await Promise.allSettled([fetchSearch(topic, 20), fetchTrend(topic)]);
-      if (s.status === "fulfilled") setResults(s.value.results);
-      else throw s.reason;
-      if (t.status === "fulfilled") setTrend(t.value);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Search failed");
-    } finally {
-      setBusy(false);
-    }
+    setInterp(null);
+    setAsked(topic);
+    let shown = false;
+    const plain = fetchSearch(topic, 20)
+      .then((s) => {
+        if (run.current === me && !shown) {
+          shown = true;
+          setResults(s.results);
+          setBusy(false);
+        }
+      })
+      .catch(() => {});
+    const smart = exact
+      ? Promise.resolve(null)
+      : fetchSearch(topic, 20, true)
+          .then((s) => {
+            if (run.current !== me) return null;
+            shown = true;
+            setResults(s.results);
+            setInterp(s.interpreted ?? null);
+            setBusy(false);
+            return s.interpreted?.corrected ?? null;
+          })
+          .catch(() => null);
+    const corrected = await smart;
+    await plain;
+    if (run.current !== me) return;
+    setImproving(false);
+    setBusy(false);
+    if (!shown) setErr("Search failed. Check your connection and try again.");
+    fetchTrend(corrected || topic)
+      .then((t) => run.current === me && setTrend(t))
+      .catch(() => {});
   }
 
   return (
@@ -108,11 +146,55 @@ export function Library({
         {trend && <Pulse t={trend} />}
         {busy && <p className="px-4 py-3 text-sm text-ink-3 animate-pulse">Searching…</p>}
         {err && <p className="px-4 py-3 text-sm text-bad">{err}</p>}
+        {interp && !busy && (
+          <div className="mx-3 mt-3 rounded-xl bg-accent-soft px-3 py-2 text-xs text-ink-2">
+            <div>
+              Showing results for <strong className="text-ink">{interp.corrected}</strong>
+            </div>
+            {interp.searches.length > 1 && <div className="mt-0.5 text-ink-3">Also searched: {interp.searches.filter((s) => s !== interp.corrected).join(" · ")}</div>}
+            <button onClick={() => search(undefined, asked, true)} className="mt-1 text-accent-ink hover:underline">
+              Search exactly “{asked}” instead
+            </button>
+          </div>
+        )}
+        {improving && results && !busy && <p className="px-4 pt-2 text-[0.7rem] text-ink-3 animate-pulse">Checking spelling and related terms…</p>}
         {results && !busy && (
-          <Section title={`Results (${results.length})`}>
+          <Section
+            title={`Results (${results.length})`}
+            action={
+              results.length > 1 ? (
+                <button
+                  onClick={() => setScreening(true)}
+                  className="rounded-full bg-accent text-white px-2.5 py-0.5 text-[0.68rem] font-medium normal-case tracking-normal hover:opacity-90"
+                  title="Go through the results one card at a time: keep or skip"
+                >
+                  Screen {results.length} →
+                </button>
+              ) : null
+            }
+          >
             {results.length === 0 && <p className="px-4 pb-3 text-sm text-ink-3">No papers found.</p>}
             {results.map((p) => (
               <ResultRow key={p.id} p={p} open={state.papers.some((o) => o.id === p.id)} onClick={() => onOpen(p)} />
+            ))}
+          </Section>
+        )}
+
+        {state.queue.length > 0 && (
+          <Section title={`Reading list (${state.queue.length})`}>
+            {state.queue.map((p) => (
+              <div key={p.id} className="group flex items-start gap-1 px-4 py-1.5 hover:bg-surface-2">
+                <button onClick={() => onOpen(p as Paper)} className="flex-1 text-left text-sm text-ink-2 hover:text-ink line-clamp-2">
+                  {p.title}
+                </button>
+                <button
+                  onClick={() => onUnqueue(p.id)}
+                  aria-label={`Remove ${p.title} from reading list`}
+                  className="text-ink-3 hover:text-ink opacity-0 group-hover:opacity-100 focus:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
             ))}
           </Section>
         )}
@@ -172,14 +254,29 @@ export function Library({
       </div>
       </>
       )}
+      {screening && results && (
+        <ScreenDeck
+          papers={results}
+          query={interp?.corrected || asked}
+          onKeep={onKeep}
+          onOpen={onOpen}
+          onDone={(r) => {
+            setScreening(false);
+            onScreened(r.kept.length, results.length, r.seconds);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <section className="py-2">
-      <h3 className="px-4 pt-1 pb-1.5 text-[0.68rem] font-semibold uppercase tracking-wider text-ink-3">{title}</h3>
+      <h3 className="px-4 pt-1 pb-1.5 text-[0.68rem] font-semibold uppercase tracking-wider text-ink-3 flex items-center justify-between gap-2">
+        {title}
+        {action}
+      </h3>
       {children}
     </section>
   );

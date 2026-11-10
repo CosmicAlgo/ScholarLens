@@ -80,7 +80,7 @@ async def test_figure_reader_sends_the_pdf_pages_and_drops_invented_pages():
     ev = await read_pdf_figures(Deps(llm=llm, tools=FakeTools()), PdfFulltext(), "W1", "Paper", "table 1", 2)
     (media,) = llm.media
     assert media[0].mime_type == "application/pdf"
-    assert len(PdfReader(io.BytesIO(base64.b64decode(media[0].data))).pages) == 2
+    assert len(media) == 2 and all(len(PdfReader(io.BytesIO(base64.b64decode(m.data))).pages) == 1 for m in media)
     assert [e["id"] for e in ev] == ["F:W1:4:1"]  # page 99 was not among the pages shown
     assert "AI reading of a figure" in ledger_text(ev)
     assert verify_answer("Table 1 shows a three point gain over the strongest baseline [F:W1:4:1].", ev)["valid"] == 1
@@ -159,11 +159,46 @@ async def test_connection_map_keeps_shared_foundations(monkeypatch):
     assert ("W1", "W2") in edges and ("W1", "W10") in edges and ("W2", "W10") in edges and ("W50", "W1") in edges
 
 
-class PositionalLLM(VisionLLM):
+class WrongPageLLM(VisionLLM):
     async def structured(self, *, tier, system, prompt, schema, media=None):
-        return Figures(figures=[{"page": 1, "label": "Table 1", "kind": "table", "shows": "s", "takeaway": "t"}])
+        self.media.append(media)
+        return Figures(figures=[{"page": 2, "label": "Table 1", "kind": "table", "shows": "s", "takeaway": "t"}])
 
 
-async def test_positional_page_numbers_are_mapped_back_to_real_pages():
-    ev = await read_pdf_figures(Deps(llm=PositionalLLM(), tools=FakeTools()), PdfFulltext(), "W1", "P", "table 1", 2)
-    assert [e["page"] for e in ev] == [choose_pages(PAGES, "table 1", 2)[0]]  # position 1, not page 1
+async def test_printed_caption_decides_the_page_not_the_model(monkeypatch):
+    from scholarlens.agents import figures
+
+    monkeypatch.setattr(
+        figures, "raw_pages", lambda data, pages: {2: "see Table 1.\nmore text", 4: "Results\nTable 1: Accuracy."}
+    )
+    llm = WrongPageLLM()
+    ev = await read_pdf_figures(Deps(llm=llm, tools=FakeTools()), PdfFulltext(), "W1", "P", "table 1", 2)
+    assert [(e["page"], e["caption"]) for e in ev] == [(4, "Table 1: Accuracy.")]
+    # every page is sent on its own, labelled with its real page number
+    assert [m.label for m in llm.media[0]] == ["Page 2 of the paper:", "Page 4 of the paper:"]
+
+
+def test_in_text_mentions_are_not_captions():
+    from scholarlens.agents.figures import ground
+
+    texts = {3: "as shown in\nFigure 2. METRAG works", 4: "Figure 2: The framework."}
+    assert ground("Figure 2", 3, texts) == (4, "Figure 2: The framework.")
+    assert ground("Figure 9", 7, texts) == (None, None)  # page 7 was never shown to the model
+
+
+def test_numbers_must_come_from_the_cited_source():
+    ev = [
+        {
+            "id": "S:W1:3",
+            "kind": "passage",
+            "paper_id": "W1",
+            "title": "T",
+            "page": 5,
+            "text": "Recall rose by 12.4% on 1,200 queries.",
+        },
+        {"id": "P:W2", "kind": "paper", "title": "Other", "year": 2021, "cited_by": 340, "flags": [], "abstract": ""},
+    ]
+    good = "Recall rose by 12.4% across 1,200 queries, shown in Figure 3 [S:W1:3]. It was published in 2021 [P:W2]."
+    assert verify_answer(good, ev)["unsupported_numbers"] == []
+    bad = verify_answer("Recall rose by 21% over three stages [S:W1:3]. Later work cites it 900 times [P:W2].", ev)
+    assert [x["number"] for x in bad["unsupported_numbers"]] == ["21%", "900"]

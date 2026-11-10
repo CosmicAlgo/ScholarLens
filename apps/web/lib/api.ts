@@ -120,8 +120,11 @@ export const fetchTrend = (q: string) => get<Trend>(`/api/trend?q=${encodeURICom
 export const fetchCompare = (topics: string[]) =>
   get<{ topics: Trend[] }>(`/api/compare?${topics.map((t) => `q=${encodeURIComponent(t)}`).join("&")}`);
 
-export const fetchSearch = (q: string, limit = 20) =>
-  get<{ query: string; results: Paper[] }>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export type Interpretation = { corrected: string; searches: string[]; note: string };
+export const fetchSearch = (q: string, limit = 20, smart = false) =>
+  get<{ query: string; interpreted?: Interpretation | null; results: Paper[] }>(
+    `/api/search?q=${encodeURIComponent(q)}&limit=${limit}${smart ? "&smart=true" : ""}`,
+  );
 
 export const fetchPaper = (id: string) => get<Paper>(`/api/papers/${encodeURIComponent(id)}`);
 

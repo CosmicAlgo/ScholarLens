@@ -77,7 +77,7 @@ function Chip({ id, e, bad, h }: { id: string; e?: EvidenceItem; bad: boolean; h
   } else if (e.kind === "figure") {
     label = `${e.label === "unlabelled" ? "figure" : e.label.replace(/^figure/i, "Fig.")}, p.${e.page}`;
     title = `AI reading of ${e.label} (page ${e.page} of ${e.title}):\n${e.text.slice(0, 400)}`;
-    onClick = () => h.openPage(e.paper_id, e.page);
+    onClick = () => h.openPage(e.paper_id, e.page, e.caption ?? undefined);
   } else if (e.kind === "paper") {
     const who = e.authors[0]?.split(" ").at(-1) || "paper";
     label = `${who}${e.year ? ` ’${String(e.year).slice(2)}` : ""}`;

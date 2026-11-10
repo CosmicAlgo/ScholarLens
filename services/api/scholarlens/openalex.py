@@ -80,3 +80,21 @@ async def counts_by_year(query: str | None, year_from: int, year_to: int) -> dic
         except (KeyError, ValueError):
             continue
     return out
+
+
+async def cache_get(key: str, ttl_hours: float) -> dict | None:
+    """Generic JSON cache in the api_cache table (shared with the OpenAlex cache)."""
+    async with pool().connection() as conn:
+        row = await (await conn.execute("SELECT payload, fetched_at FROM api_cache WHERE key = %s", (key,))).fetchone()
+    if row and datetime.now(UTC) - row["fetched_at"] < timedelta(hours=ttl_hours):
+        return row["payload"]
+    return None
+
+
+async def cache_put(key: str, payload: dict) -> None:
+    async with pool().connection() as conn:
+        await conn.execute(
+            """INSERT INTO api_cache (key, payload, fetched_at) VALUES (%s, %s, now())
+               ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()""",
+            (key, Jsonb(payload)),
+        )

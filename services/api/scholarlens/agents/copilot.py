@@ -106,6 +106,7 @@ Evidence rules (strict):
 - Cite inline with the ledger id in square brackets right after the sentence it supports,
   e.g. "...improves recall by 12% [S:W123:4]." Use several ids if needed: [S:W1:2][P:W9].
 - Never invent ids, numbers, authors or results. If the ledger lacks something, say so plainly.
+- Copy every number exactly as it appears in the evidence you cite for it (a checker compares them).
 - Papers flagged retracted must not be used as support. Point out when key evidence is a preprint.
 - General background knowledge may be used only to explain concepts, never as a claim about a paper,
   and needs no citation.
@@ -347,7 +348,47 @@ def verify_answer(answer: str, evidence: list[dict]) -> dict:
         "retracted": retracted,
         "paragraphs": len(paragraphs),
         "uncited_paragraphs": uncited,
+        "unsupported_numbers": unsupported_numbers(answer, known),
     }
+
+
+_NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(\s?%)?")
+_SENT = re.compile(r"(?<=[.!?])\s+(?=[A-Z*\-(\[])|\n+")
+_LABELLED = re.compile(r"(?:fig\.?|figure|table|stage|step|section|eq\.?|equation|chapter|appendix|p\.)\s*$", re.I)
+
+
+def _evidence_numbers(e: dict) -> set[str]:
+    text = " ".join(str(v) for k, v in e.items() if k not in ("id", "paper_id") and v is not None)
+    return {m.group(1).replace(",", "") for m in _NUM.finditer(text)}
+
+
+def unsupported_numbers(answer: str, known: dict[str, dict]) -> list[dict]:
+    """Numbers in cited sentences that appear in none of the sources that sentence cites.
+
+    A model can cite a real passage and still misquote it ("improves recall by 21%" when the source
+    says 12%). Every number worth checking (decimals, percentages, anything above 10) must appear in
+    the cited evidence. Deterministic, so it covers any agent that writes cited answers."""
+    out: list[dict] = []
+    for sent in _SENT.split(answer):
+        ids = [c for c in _CITE.findall(sent) if c in known]
+        if not ids:
+            continue
+        have: set[str] = set()
+        for i in ids:
+            have |= _evidence_numbers(known[i])
+        body = _CITE.sub(" ", sent)
+        for m in _NUM.finditer(body):
+            raw, pct = m.group(1).replace(",", ""), m.group(2)
+            if not pct and "." not in raw and float(raw) <= 10:
+                continue  # small counts ("three stages", list numbers) are not claims worth checking
+            if _LABELLED.search(body[: m.start()]):
+                continue  # "Figure 3", "Table 12", "Section 4"
+            if raw in have or raw.rstrip("0").rstrip(".") in {h.rstrip("0").rstrip(".") for h in have}:
+                continue
+            out.append({"number": m.group(0).strip(), "sentence": body.strip()[:240], "cites": ids})
+            if len(out) >= 12:
+                return out
+    return out
 
 
 async def write_answer(

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { track } from "@/components/analytics";
 import { CopilotPanel, type PendingSelection } from "@/components/workspace/copilot-panel";
 import { Library } from "@/components/workspace/library";
@@ -47,6 +47,10 @@ export function WorkspaceClient() {
   const [matrixStatus, setMatrixStatus] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ text: string; tone: "info" | "bad" } | null>(null);
   const wide = useWide();
+  const libPanel = usePanelRef();
+  const copPanel = usePanelRef();
+  const [libClosed, setLibClosed] = useState(false);
+  const [copClosed, setCopClosed] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const sRef = useRef(s);
   sRef.current = s;
@@ -316,7 +320,21 @@ export function WorkspaceClient() {
       onNote={(id, note) => setS((c) => ({ ...c, highlights: c.highlights.map((x) => (x.id === id ? { ...x, note } : x)) }))}
     />
   );
-  const library = <Library state={s} onOpen={openPaper} onActivate={openById} onUpload={(f) => upload(f)} notes={notes} />;
+  const library = (
+    <Library
+      state={s}
+      onOpen={openPaper}
+      onActivate={openById}
+      onUpload={(f) => upload(f)}
+      notes={notes}
+      onKeep={(p) => setS((c) => (c.queue.some((x) => x.id === p.id) ? c : { ...c, queue: [pick(p), ...c.queue].slice(0, 100) }))}
+      onUnqueue={(id) => setS((c) => ({ ...c, queue: c.queue.filter((x) => x.id !== id) }))}
+      onScreened={(kept, total, seconds) => {
+        track("screened", { kept, total, seconds });
+        if (kept) setNotice({ text: `${kept} of ${total} papers added to your reading list.`, tone: "info" });
+      }}
+    />
+  );
   const reader = (
     <Reader
       papers={s.papers}
@@ -398,8 +416,23 @@ export function WorkspaceClient() {
       {wide && (
       <div className="flex-1 min-h-0 p-2">
         <Group orientation="horizontal" className="h-full">
-          <Panel defaultSize="22" minSize="15" className="rounded-2xl border border-line bg-surface overflow-hidden shadow-sm">
-            {library}
+          <Panel
+            panelRef={libPanel}
+            defaultSize="22"
+            minSize="15"
+            collapsible
+            collapsedSize="44px"
+            onResize={(size) => setLibClosed(size.inPixels < 80)}
+            className="rounded-2xl border border-line bg-surface overflow-hidden shadow-sm"
+          >
+            {libClosed ? (
+              <Rail label="Library" side="left" onOpen={() => libPanel.current?.expand()} badge={s.queue.length || undefined} />
+            ) : (
+              <div className="h-full relative">
+                {library}
+                <CollapseBtn side="left" onClick={() => libPanel.current?.collapse()} />
+              </div>
+            )}
           </Panel>
           <Separator className="w-2 group flex items-center justify-center">
             <span className="h-10 w-1 rounded-full bg-line group-hover:bg-accent transition-colors" />
@@ -410,13 +443,62 @@ export function WorkspaceClient() {
           <Separator className="w-2 group flex items-center justify-center">
             <span className="h-10 w-1 rounded-full bg-line group-hover:bg-accent transition-colors" />
           </Separator>
-          <Panel defaultSize="30" minSize="22" className="rounded-2xl border border-line bg-surface overflow-hidden shadow-sm">
-            {copilot}
+          <Panel
+            panelRef={copPanel}
+            defaultSize="30"
+            minSize="22"
+            collapsible
+            collapsedSize="44px"
+            onResize={(size) => setCopClosed(size.inPixels < 80)}
+            className="rounded-2xl border border-line bg-surface overflow-hidden shadow-sm"
+          >
+            {copClosed ? (
+              <Rail label="Copilot" side="right" onOpen={() => copPanel.current?.expand()} busy={busy} />
+            ) : (
+              <div className="h-full relative">
+                {copilot}
+                <CollapseBtn side="right" onClick={() => copPanel.current?.collapse()} />
+              </div>
+            )}
           </Panel>
         </Group>
       </div>
       )}
     </div>
+  );
+}
+
+/** A collapsed side panel: a slim rail that reopens it. */
+function Rail({ label, side, onOpen, badge, busy }: { label: string; side: "left" | "right"; onOpen: () => void; badge?: number; busy?: boolean }) {
+  return (
+    <button
+      onClick={onOpen}
+      aria-label={`Show ${label}`}
+      title={`Show ${label}`}
+      className="h-full w-full flex flex-col items-center gap-3 pt-3 text-ink-3 hover:text-ink hover:bg-surface-2 transition-colors"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+        <path d={side === "left" ? "m9 6 6 6-6 6" : "m15 6-6 6 6 6"} />
+      </svg>
+      <span className="text-xs font-medium tracking-wide [writing-mode:vertical-rl] rotate-180">{label}</span>
+      {badge ? <span className="min-w-5 h-5 px-1 rounded-full bg-accent text-white text-[0.65rem] leading-5">{badge}</span> : null}
+      {busy && <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />}
+    </button>
+  );
+}
+
+function CollapseBtn({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={side === "left" ? "Collapse library" : "Collapse Copilot"}
+      title={side === "left" ? "Collapse library" : "Collapse Copilot"}
+      className={`absolute top-1/2 -translate-y-1/2 ${side === "left" ? "right-0 rounded-l-lg border-r-0" : "left-0 rounded-r-lg border-l-0"} z-10 w-4 h-12 grid place-items-center border border-line bg-surface text-ink-3 opacity-60 hover:opacity-100 hover:text-ink hover:w-5 transition-all`}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+        <path d={side === "left" ? "m15 6-6 6 6 6" : "m9 6 6 6-6 6"} />
+      </svg>
+    </button>
   );
 }
 

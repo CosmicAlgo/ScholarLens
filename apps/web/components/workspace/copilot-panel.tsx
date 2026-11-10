@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { JobStatus, Message, Mode, NoveltyItem, OpenPaper, Selection } from "@/lib/workspace";
+import type { JobStatus, Message, Mode, NoveltyItem, OpenPaper, Selection, Verification } from "@/lib/workspace";
 import { JOB_LABEL } from "@/lib/workspace";
 import { Answer, type CiteHandlers } from "./answer";
 
@@ -268,17 +268,33 @@ function Dispatch({ jobs, done }: { jobs: JobStatus[]; done: boolean }) {
   );
 }
 
-function Verified({ v, sources }: { v: { citations: number; valid: number; invalid: string[]; retracted: string[] }; sources: number }) {
-  const ok = v.invalid.length === 0 && v.retracted.length === 0;
+function Verified({ v, sources }: { v: Verification; sources: number }) {
+  const nums = v.unsupported_numbers || [];
+  const ok = v.invalid.length === 0 && v.retracted.length === 0 && nums.length === 0;
   return (
-    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-3 py-1.5 text-[0.7rem] ${ok ? "bg-good-soft text-good" : "bg-warn-soft text-warn"}`}>
-      <span className="font-semibold">{ok ? "✓ Verified" : "⚠ Check citations"}</span>
-      <span>
-        {v.valid}/{v.citations} citations match the evidence
-      </span>
-      <span>{sources} sources gathered</span>
-      {v.invalid.length > 0 && <span>{v.invalid.length} unverified</span>}
-      {v.retracted.length > 0 && <span>{v.retracted.length} retracted cited</span>}
+    <div className={`rounded-lg px-3 py-1.5 text-[0.7rem] ${ok ? "bg-good-soft text-good" : "bg-warn-soft text-warn"}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="font-semibold">{ok ? "✓ Verified" : "⚠ Check before relying on this"}</span>
+        <span>
+          {v.valid}/{v.citations} citations match the evidence
+        </span>
+        <span>{nums.length === 0 ? "numbers match their sources" : `${nums.length} number${nums.length > 1 ? "s" : ""} not found in the cited source`}</span>
+        <span>{sources} sources gathered</span>
+        {v.invalid.length > 0 && <span>{v.invalid.length} unverified</span>}
+        {v.retracted.length > 0 && <span>{v.retracted.length} retracted cited</span>}
+      </div>
+      {nums.length > 0 && (
+        <details className="mt-1">
+          <summary className="cursor-pointer">Show which</summary>
+          <ul className="mt-1 space-y-1 text-ink-2">
+            {nums.map((n, i) => (
+              <li key={i}>
+                <strong className="text-warn">{n.number}</strong> in “{n.sentence.length > 160 ? n.sentence.slice(0, 160) + "…" : n.sentence}”
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

@@ -5,6 +5,8 @@ most likely to answer it, then a fast LLM fills the row using only those passage
 ids, and citations not in the retrieved set are dropped, so each cell links to the page it came from.
 """
 
+import re
+
 from pydantic import BaseModel, Field
 
 from .copilot import doc_passages
@@ -82,10 +84,18 @@ async def extract_row(deps: Deps, ft, paper_id: str, title: str, passages: list[
 
     ledger = "\n".join(f"[{e['id']}] (page {e['page']}) {e['text'][:1200]}" for e in uniq)
     row = await deps.llm.structured(tier="fast", system=SYSTEM, prompt=f'Paper: "{title}"\n\n{ledger}', schema=Row)
+    from .copilot import unsupported_numbers
+
+    by_id = {e["id"]: e for e in uniq}
     cells = {}
     for col in COLUMNS:
         cell: Cell = getattr(row, col)
-        cells[col] = {"text": cell.text, "cites": [c for c in cell.cites if c in seen]}
+        cites = [c for c in cell.cites if c in seen]
+        # Same number check as Copilot answers: a figure in a cell must appear in a passage it cites.
+        tag = "".join(f" [{c}]" for c in cites)
+        tagged = re.sub(r"([.!?])(\s+)", tag + r"\1\2", cell.text.strip()) + tag if cites else ""
+        flagged = sorted({x["number"] for x in unsupported_numbers(tagged, by_id)}) if tagged else []
+        cells[col] = {"text": cell.text, "cites": cites, "unsupported_numbers": flagged}
     used = {c for cell in cells.values() for c in cell["cites"]}
     return {
         "paper_id": paper_id,

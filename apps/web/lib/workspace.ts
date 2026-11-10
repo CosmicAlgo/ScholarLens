@@ -21,7 +21,7 @@ export type JobStatus = Job & { status: "running" | "done" | "failed"; note?: st
 
 export type EvidenceItem =
   | { id: string; kind: "passage" | "highlight"; paper_id: string; title: string; page: number; text: string; figure?: boolean }
-  | { id: string; kind: "figure"; paper_id: string; title: string; page: number; label: string; figure_kind: string; text: string }
+  | { id: string; kind: "figure"; paper_id: string; title: string; page: number; label: string; figure_kind: string; text: string; caption?: string | null }
   | {
       id: string;
       kind: "paper";
@@ -42,6 +42,8 @@ export type Verification = {
   retracted: string[];
   paragraphs: number;
   uncited_paragraphs: number;
+  /** Numbers in cited sentences that none of the cited sources contain. */
+  unsupported_numbers?: { number: string; sentence: string; cites: string[] }[];
 };
 
 export type NoveltyItem = {
@@ -105,7 +107,7 @@ export const MATRIX_COLUMNS = [
   { key: "limitations", label: "Limitations" },
 ] as const;
 
-export type MatrixCell = { text: string; cites: string[] };
+export type MatrixCell = { text: string; cites: string[]; unsupported_numbers?: string[] };
 export type MatrixRow = {
   paper_id: string;
   source: "full_text" | "uploaded" | "abstract";
@@ -122,9 +124,11 @@ export type WorkspaceState = {
   highlights: Highlight[];
   matrix: Record<string, MatrixRow>;
   figures: Record<string, FigureItem[]>;
+  /** Reading list: papers kept while screening. */
+  queue: OpenPaper[];
 };
 
-export const EMPTY: WorkspaceState = { papers: [], activeId: null, page: {}, messages: [], recent: [], highlights: [], matrix: {}, figures: {} };
+export const EMPTY: WorkspaceState = { papers: [], activeId: null, page: {}, messages: [], recent: [], highlights: [], matrix: {}, figures: {}, queue: [] };
 const KEY = "sl_workspace_v1";
 
 export function loadState(): WorkspaceState {
@@ -186,7 +190,7 @@ export async function extractRow(paper_id: string, title: string, passages?: Doc
 export async function readFigures(
   paper_id: string,
   title: string,
-  images?: { page: number; data: string }[],
+  images?: { page: number; data: string; text?: string }[],
 ): Promise<FigureItem[]> {
   const res = await fetch(`${API_URL}/api/figures`, {
     method: "POST",
@@ -322,4 +326,30 @@ export function download(name: string, text: string, type = "text/plain") {
   const a = Object.assign(document.createElement("a"), { href: url, download: name });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export type SeriesPoint = { year: number; count: number; per_million: number | null };
+export type Lineage = {
+  years: [number, number];
+  topics: { id: string; name: string; path: string[]; works_count: number; related: string[]; trend: SeriesPoint[]; papers: string[] }[];
+  terms: {
+    term: string;
+    first_year: number | null;
+    early_papers: { id: string; title: string; year: number | null; cited_by: number }[];
+    total: number;
+    trend: SeriesPoint[];
+    papers: string[];
+  }[];
+  spread: { topic: string; count: number; papers: string[] }[];
+  source: string;
+};
+
+export async function fetchLineage(ids: string[]): Promise<Lineage> {
+  const res = await fetch(`${API_URL}/api/lineage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error(await errorText(res, "Could not load the topic context."));
+  return res.json();
 }

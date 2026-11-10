@@ -91,11 +91,15 @@ export function figurePages(passages: DocPassage[], limit = 6): number[] {
 }
 
 /** Render pages to JPEG in the browser (for figure reading on PDFs that never leave this device). */
-export async function renderPages(data: ArrayBuffer, pages: number[], width = 1240): Promise<{ page: number; data: string }[]> {
+export async function renderPages(
+  data: ArrayBuffer,
+  pages: number[],
+  width = 1240,
+): Promise<{ page: number; data: string; text: string }[]> {
   const { pdfjs } = await import("./pdfjs");
   const task = pdfjs.getDocument({ data: new Uint8Array(data.slice(0)) });
   const pdf = await task.promise;
-  const out: { page: number; data: string }[] = [];
+  const out: { page: number; data: string; text: string }[] = [];
   try {
     for (const n of pages) {
       if (n < 1 || n > pdf.numPages) continue;
@@ -109,7 +113,13 @@ export async function renderPages(data: ArrayBuffer, pages: number[], width = 12
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvas, canvasContext: ctx, viewport }).promise;
-      out.push({ page: n, data: canvas.toDataURL("image/jpeg", 0.82).split(",")[1] });
+      // Page text with line breaks, so the server can check figure labels against printed captions.
+      const content = await page.getTextContent();
+      const text = content.items
+        .map((it) => ("str" in it ? it.str + (it.hasEOL ? "\n" : "") : ""))
+        .join("")
+        .slice(0, 19000);
+      out.push({ page: n, data: canvas.toDataURL("image/jpeg", 0.82).split(",")[1], text });
     }
   } finally {
     await task.destroy();

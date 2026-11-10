@@ -25,7 +25,7 @@ MAX_PAGE_BYTES = 14_000_000  # inline request limit is ~20 MB after base64
 
 
 class Figure(BaseModel):
-    page: int = Field(description="the page number as given in the list of pages (not the position)")
+    page: int = Field(description='the page number from the "Page N" label just before the page it is on')
     label: str = Field(description='as printed, e.g. "Figure 3" or "Table 2"; "unlabelled" if none')
     kind: Literal["chart", "diagram", "flowchart", "table", "image", "equation", "other"]
     shows: str = Field(description="what the visual shows: axes, components, arrows, groups (1-3 sentences)")
@@ -120,9 +120,47 @@ def _prompt(title: str, pages: list[int], query: str | None) -> str:
         else ("Describe every figure, table and diagram on these pages.")
     )
     return (
-        f'Paper: "{title}"\nThe attached pages are, in order, pages {", ".join(map(str, pages))} of the paper. '
-        f"Report each figure's page using those numbers.\n{focus}"
+        f'Paper: "{title}"\nEach attached page is preceded by a label "Page N of the paper". Report each '
+        f"figure's page as that N. Copy each figure's label exactly as printed in its caption.\n{focus}"
     )
+
+
+_LABEL = re.compile(r"\b(fig\.?|figure|table|algorithm)\s*(\d+|[ivx]+)\b", re.I)
+
+
+def find_caption(label: str, page_text: str, seps: str = ":.|") -> str | None:
+    """The printed caption for `label` ("Figure 2") if it starts a line of the page text, else None.
+    In-text mentions ("as shown in Figure 2.") never start a line, so they are not mistaken for it."""
+    m = _LABEL.search(label)
+    if not m:
+        return None
+    word = (
+        r"table"
+        if m.group(1).lower() == "table"
+        else r"algorithm"
+        if m.group(1).lower() == "algorithm"
+        else (r"(?:fig\.?|figure)")
+    )
+    pat = re.compile(rf"^\s*{word}\s*{re.escape(m.group(2))}\s*[{re.escape(seps)}]\s*(.{{0,200}})", re.I | re.M)
+    hit = pat.search(page_text)
+    if not hit:
+        return None
+    return re.sub(r"\s+", " ", hit.group(0)).strip()
+
+
+def raw_pages(data: bytes, pages: list[int]) -> dict[int, str]:
+    """Page text with line breaks kept (captions start a line)."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    out = {}
+    for p in pages:
+        if 1 <= p <= len(reader.pages):
+            try:
+                out[p] = reader.pages[p - 1].extract_text() or ""
+            except Exception:  # a broken page must not sink the rest
+                out[p] = ""
+    return out
 
 
 async def read_pdf_figures(deps: Deps, ft, paper_id: str, title: str, query: str | None, limit: int = 3) -> list[dict]:
@@ -135,41 +173,64 @@ async def read_pdf_figures(deps: Deps, ft, paper_id: str, title: str, query: str
     chosen = choose_pages(pages, query, min(limit, MAX_PDF_PAGES_TO_MODEL))
     if not chosen:
         return []
-    pdf = await asyncio.to_thread(subset_pdf, data, chosen)
-    if len(pdf) > MAX_PAGE_BYTES:  # scanned or image-heavy: send fewer pages
-        chosen = chosen[:1]
-        pdf = await asyncio.to_thread(subset_pdf, data, chosen)
-        if len(pdf) > MAX_PAGE_BYTES:
-            return []
-    media = [Media("application/pdf", base64.b64encode(pdf).decode())]
-    return await _read(deps, paper_id, title, chosen, query, media)
+    # One small PDF per page, each labelled with its real page number, so the model cannot confuse
+    # a page's position in the request with its page number in the paper.
+    media, total = [], 0
+    for p in chosen:
+        one = await asyncio.to_thread(subset_pdf, data, [p])
+        total += len(one)
+        if total > MAX_PAGE_BYTES:
+            break
+        media.append(Media("application/pdf", base64.b64encode(one).decode(), label=f"Page {p} of the paper:"))
+    if not media:
+        return []
+    sent = chosen[: len(media)]
+    texts = await asyncio.to_thread(raw_pages, data, sent)
+    return await _read(deps, paper_id, title, sent, query, media, texts)
 
 
 async def read_image_figures(
-    deps: Deps, paper_id: str, title: str, images: list[tuple[int, str]], query: str | None
+    deps: Deps,
+    paper_id: str,
+    title: str,
+    images: list[tuple[int, str]],
+    query: str | None,
+    texts: dict[int, str] | None = None,
 ) -> list[dict]:
-    """Figures from page images the browser rendered (uploaded PDFs never reach the server)."""
+    """Figures from page images the browser rendered (uploaded PDFs never reach the server).
+    `texts` is each page's text (with line breaks), extracted in the browser, for caption checks."""
     if not images:
         return []
     pages = [p for p, _ in images]
-    media = [Media("image/jpeg", b64) for _, b64 in images]
-    return await _read(deps, paper_id, title, pages, query, media)
+    media = [Media("image/jpeg", b64, label=f"Page {p} of the paper:") for p, b64 in images]
+    return await _read(deps, paper_id, title, pages, query, media, texts or {})
 
 
-async def _read(deps: Deps, paper_id: str, title: str, pages: list[int], query, media) -> list[dict]:
+def ground(label: str, model_page: int, texts: dict[int, str]) -> tuple[int | None, str | None]:
+    """Where the figure really is: the page whose text prints its caption wins over the model's page.
+    Returns (page, caption); page is None when the model's page was not among those it was shown."""
+    # "Figure 2:" is a caption; "Figure 2." at a line start can be a wrapped in-text mention, so it
+    # only counts when no page prints the colon form.
+    for seps in (":|", "."):
+        for p, t in texts.items():
+            cap = find_caption(label, t, seps)
+            if cap:
+                return p, cap
+    return (model_page if model_page in texts or not texts else None), None
+
+
+async def _read(deps: Deps, paper_id: str, title: str, pages: list[int], query, media, texts) -> list[dict]:
     out = await deps.llm.structured(
         tier="fast", system=SYSTEM, prompt=_prompt(title, pages, query), schema=Figures, media=media
     )
     allowed, seen, ev = set(pages), {}, []
-    # Some replies number the attached pages by position (1, 2, 3) instead of their real numbers.
-    positional = bool(out.figures) and all(f.page not in allowed and 1 <= f.page <= len(pages) for f in out.figures)
+    texts = {p: texts.get(p, "") for p in pages} if texts else {}
     for f in out.figures:
-        if positional:
-            page = pages[f.page - 1]
-        else:
-            page = f.page if f.page in allowed else pages[0] if len(pages) == 1 else None
-        if page is None:
-            continue  # the model invented a page number
+        page, caption = ground(f.label, f.page, texts)
+        if page is None and not texts:
+            page = f.page if f.page in allowed else None
+        if page is None or page not in allowed:
+            continue  # the model invented a page number and no printed caption places the figure
         seen[page] = seen.get(page, 0) + 1
         ev.append(
             {
@@ -180,6 +241,9 @@ async def _read(deps: Deps, paper_id: str, title: str, pages: list[int], query, 
                 "page": page,
                 "label": f.label[:60],
                 "figure_kind": f.kind,
+                # The caption is copied from the PDF's text: it is what the reader jumps to and what
+                # shows the label is real. Without it, the label is the vision model's reading.
+                "caption": caption,
                 "text": f"{f.label} ({f.kind}). Shows: {f.shows} Takeaway: {f.takeaway}",
             }
         )

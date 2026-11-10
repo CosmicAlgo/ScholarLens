@@ -1,16 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchGraph, type Graph, type GraphNode, type Message, type NoveltyItem, type OpenPaper } from "@/lib/workspace";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { topicSlug } from "@/lib/api";
+import {
+  fetchGraph,
+  fetchLineage,
+  type Graph,
+  type GraphNode,
+  type Lineage,
+  type Message,
+  type NoveltyItem,
+  type OpenPaper,
+  type SeriesPoint,
+} from "@/lib/workspace";
 
-const STYLE: Record<GraphNode["kind"], { fill: string; label: string; hint: string }> = {
-  open: { fill: "var(--accent)", label: "Open paper", hint: "A paper you have open" },
-  shared: { fill: "var(--vision)", label: "Shared foundation", hint: "Cited by two or more of your papers" },
-  reference: { fill: "var(--text-3)", label: "Key reference", hint: "A most-cited work one of your papers builds on" },
-  citing: { fill: "var(--good)", label: "Built on it", hint: "A most-cited later work that cites your paper" },
-  idea: { fill: "var(--warn)", label: "Your idea", hint: "An idea from Copilot's Ideas mode" },
-  prior: { fill: "var(--series-2)", label: "Prior work for an idea", hint: "The closest existing work the novelty check found" },
-};
+type Kind = GraphNode["kind"];
+
+/** Lanes, top to bottom: what came before, the user's papers, what came after, the user's ideas. */
+const LANES: { kind: Kind; label: string; hint: string; color: string }[] = [
+  { kind: "shared", label: "Shared foundations", hint: "Cited by two or more of your papers", color: "var(--vision)" },
+  { kind: "reference", label: "Key references", hint: "The most-cited works your papers build on", color: "var(--text-3)" },
+  { kind: "open", label: "Your papers", hint: "Papers you have open", color: "var(--accent)" },
+  { kind: "citing", label: "Built on it", hint: "The most-cited later work citing your papers", color: "var(--good)" },
+  { kind: "idea", label: "Your ideas", hint: "Ideas from Copilot's Ideas mode", color: "var(--warn)" },
+  { kind: "prior", label: "Closest prior work", hint: "What the novelty check found for each idea", color: "var(--series-2)" },
+];
+const LANE = Object.fromEntries(LANES.map((l) => [l.kind, l])) as Record<Kind, (typeof LANES)[number]>;
 
 const VERDICT: Record<NoveltyItem["verdict"], string> = {
   open: "No close match found",
@@ -18,10 +34,15 @@ const VERDICT: Record<NoveltyItem["verdict"], string> = {
   already_done: "Already done",
 };
 
-type P = GraphNode & { x: number; y: number; r: number };
-type E = { source: string; target: string; dashed?: boolean };
+const COL = 184; // px per year column
+const CARD_W = 168;
+const CARD_H = 64;
+const GAP = 8;
+const HEAD = 34;
 
-/** Merge the citation graph with ideas from the conversation's novelty checks. */
+type E = { source: string; target: string; dashed?: boolean };
+type Placed = GraphNode & { x: number; y: number };
+
 function withIdeas(g: Graph | null, messages: Message[]): { nodes: GraphNode[]; edges: E[] } {
   const nodes = new Map((g?.nodes || []).map((n) => [n.id, n]));
   const edges: E[] = [...(g?.edges || [])];
@@ -31,7 +52,7 @@ function withIdeas(g: Graph | null, messages: Message[]): { nodes: GraphNode[]; 
     for (const idea of m.novelty) {
       const id = `idea:${i++}`;
       nodes.set(id, { id, title: idea.title, year: null, cited_by: 0, kind: "idea", verdict: idea.verdict });
-      for (const c of idea.closest.slice(0, 3)) {
+      for (const c of idea.closest.slice(0, 2)) {
         if (!nodes.has(c.id)) nodes.set(c.id, { id: c.id, title: c.title, year: c.year, cited_by: c.cited_by, kind: "prior" });
         edges.push({ source: id, target: c.id, dashed: true });
       }
@@ -40,63 +61,42 @@ function withIdeas(g: Graph | null, messages: Message[]): { nodes: GraphNode[]; 
   return { nodes: [...nodes.values()], edges };
 }
 
-function radius(n: GraphNode) {
-  if (n.kind === "open") return 15;
-  if (n.kind === "idea") return 11;
-  return 5 + Math.min(7, Math.log10(1 + n.cited_by) * 1.8);
-}
-
-/** A small deterministic force layout (repulsion, springs, gravity). Fine for <150 nodes. */
-function layout(nodes: GraphNode[], edges: E[]): P[] {
-  const pts: P[] = nodes.map((n, i) => {
-    const a = (i / Math.max(1, nodes.length)) * Math.PI * 2;
-    const ring = n.kind === "open" ? 60 : n.kind === "idea" ? 260 : 180;
-    return { ...n, x: Math.cos(a * 3.7) * ring, y: Math.sin(a * 3.7) * ring, r: radius(n) };
-  });
-  const idx = new Map(pts.map((p, i) => [p.id, i]));
-  const links = edges.map((e) => [idx.get(e.source), idx.get(e.target)]).filter((l): l is [number, number] => l[0] !== undefined && l[1] !== undefined);
-  for (let it = 0; it < 320; it++) {
-    const cool = 1 - it / 320;
-    const fx = new Float64Array(pts.length), fy = new Float64Array(pts.length);
-    for (let i = 0; i < pts.length; i++)
-      for (let j = i + 1; j < pts.length; j++) {
-        const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
-        const d2 = Math.max(dx * dx + dy * dy, 25);
-        const f = 2600 / d2;
-        const d = Math.sqrt(d2);
-        fx[i] += (dx / d) * f; fy[i] += (dy / d) * f;
-        fx[j] -= (dx / d) * f; fy[j] -= (dy / d) * f;
-      }
-    for (const [a, b] of links) {
-      const dx = pts[b].x - pts[a].x, dy = pts[b].y - pts[a].y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const want = pts[a].kind === "open" && pts[b].kind === "open" ? 140 : 85;
-      const f = (d - want) * 0.04;
-      fx[a] += (dx / d) * f; fy[a] += (dy / d) * f;
-      fx[b] -= (dx / d) * f; fy[b] -= (dy / d) * f;
+/** Ordinal year columns (only years that have papers), lanes as rows, cards stacked in each cell. */
+function layout(nodes: GraphNode[], LABEL_W: number) {
+  const years = [...new Set(nodes.filter((n) => n.kind !== "idea" && n.year).map((n) => n.year!))].sort((a, b) => a - b);
+  const hasIdeas = nodes.some((n) => n.kind === "idea");
+  const colOf = (n: GraphNode) => (n.kind === "idea" ? years.length : n.year ? years.indexOf(n.year) : 0);
+  const lanes = LANES.filter((l) => nodes.some((n) => n.kind === l.kind));
+  const placed: Placed[] = [];
+  const laneTop: { kind: Kind; top: number; height: number }[] = [];
+  let top = HEAD;
+  for (const l of lanes) {
+    const cells = new Map<number, GraphNode[]>();
+    for (const n of nodes.filter((x) => x.kind === l.kind)) {
+      const c = colOf(n);
+      cells.set(c, [...(cells.get(c) || []), n]);
     }
-    for (let i = 0; i < pts.length; i++) {
-      const g = pts[i].kind === "open" ? 0.03 : 0.012;
-      fx[i] -= pts[i].x * g; fy[i] -= pts[i].y * g;
-      const step = Math.min(18, Math.hypot(fx[i], fy[i])) * cool;
-      const m = Math.hypot(fx[i], fy[i]) || 1;
-      pts[i].x += (fx[i] / m) * step;
-      pts[i].y += (fy[i] / m) * step;
+    let rows = 1;
+    for (const [c, list] of cells) {
+      list.sort((a, b) => b.cited_by - a.cited_by);
+      rows = Math.max(rows, list.length);
+      list.forEach((n, r) => placed.push({ ...n, x: LABEL_W + c * COL + (COL - CARD_W) / 2, y: top + GAP + r * (CARD_H + GAP) }));
     }
+    const height = rows * (CARD_H + GAP) + GAP * 2;
+    laneTop.push({ kind: l.kind, top, height });
+    top += height;
   }
-  return pts;
+  const width = LABEL_W + (years.length + (hasIdeas ? 1 : 0)) * COL + 16;
+  return { placed, laneTop, years, hasIdeas, width, height: top + 8, LABEL_W };
 }
-
-const short = (t: string, n = 34) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
 
 export function ConnectionMap({ papers, messages, onOpen }: { papers: OpenPaper[]; messages: Message[]; onOpen: (id: string) => void }) {
   const ids = papers.filter((p) => !p.id.startsWith("U")).map((p) => p.id);
   const key = ids.join(",");
+  const [tab, setTab] = useState<"lineage" | "topic">("lineage");
   const [graph, setGraph] = useState<{ key: string; g: Graph | null; error?: string } | null>(null);
   const [sel, setSel] = useState<string | null>(null);
-  const [view, setView] = useState({ k: 1, x: 0, y: 0 });
-  const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
-  const svg = useRef<SVGSVGElement>(null);
+  const [hover, setHover] = useState<string | null>(null);
 
   useEffect(() => {
     if (!key) return;
@@ -111,206 +111,348 @@ export function ConnectionMap({ papers, messages, onOpen }: { papers: OpenPaper[
 
   const loading = !!key && graph?.key !== key;
   const merged = useMemo(() => withIdeas(graph?.key === key ? graph.g : null, messages), [graph, key, messages]);
-  const pts = useMemo(() => layout(merged.nodes, merged.edges), [merged]);
-  const byId = useMemo(() => new Map(pts.map((p) => [p.id, p])), [pts]);
-
-  const box = useMemo(() => {
-    if (!pts.length) return { x: -200, y: -150, w: 400, h: 300 };
-    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-    const pad = 60;
-    const x0 = Math.min(...xs) - pad, y0 = Math.min(...ys) - pad;
-    return { x: x0, y: y0, w: Math.max(...xs) + pad - x0, h: Math.max(...ys) + pad - y0 };
-  }, [pts]);
-  const vb = { w: box.w / view.k, h: box.h / view.k };
-  const vx = box.x + (box.w - vb.w) / 2 + view.x, vy = box.y + (box.h - vb.h) / 2 + view.y;
-
-  const neighbours = useMemo(() => {
-    const m = new Map<string, Set<string>>();
+  const narrow = useNarrow();
+  const L = useMemo(() => layout(merged.nodes, narrow ? 72 : 132), [merged, narrow]);
+  const LABEL_W = L.LABEL_W;
+  const byId = useMemo(() => new Map(L.placed.map((p) => [p.id, p])), [L]);
+  const focusId = hover || sel;
+  const near = useMemo(() => {
+    if (!focusId) return null;
+    const s = new Set<string>([focusId]);
     for (const e of merged.edges) {
-      if (!m.has(e.source)) m.set(e.source, new Set());
-      if (!m.has(e.target)) m.set(e.target, new Set());
-      m.get(e.source)!.add(e.target);
-      m.get(e.target)!.add(e.source);
+      if (e.source === focusId) s.add(e.target);
+      if (e.target === focusId) s.add(e.source);
     }
-    return m;
-  }, [merged]);
-
-  const shared = useMemo(
-    () =>
-      pts
-        .filter((p) => p.kind === "shared")
-        .map((p) => ({ p, n: [...(neighbours.get(p.id) || [])].filter((x) => byId.get(x)?.kind === "open").length }))
-        .sort((a, b) => b.n - a.n || b.p.cited_by - a.p.cited_by),
-    [pts, neighbours, byId],
-  );
-
+    return s;
+  }, [focusId, merged]);
   const focus = sel ? byId.get(sel) : null;
-  const near = sel ? neighbours.get(sel) : null;
-  const uploadsOnly = papers.length > 0 && !ids.length;
 
   return (
-    <div className="h-full flex flex-col min-h-0 @container">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-line bg-surface text-[0.7rem] text-ink-2 shrink-0">
-        {(Object.keys(STYLE) as GraphNode["kind"][]).map((k) => (
-          <span key={k} className="inline-flex items-center gap-1" title={STYLE[k].hint}>
-            <svg width="10" height="10" aria-hidden="true">
-              {k === "idea" ? <rect x="1" y="1" width="8" height="8" transform="rotate(45 5 5)" fill={STYLE[k].fill} /> : <circle cx="5" cy="5" r="4.5" fill={STYLE[k].fill} />}
-            </svg>
-            {STYLE[k].label}
-          </span>
-        ))}
-        <span className="flex-1" />
-        <button className="tool-btn" aria-label="Zoom out" onClick={() => setView((v) => ({ ...v, k: Math.max(0.5, v.k / 1.3) }))}>
-          −
-        </button>
-        <button className="tool-btn" aria-label="Reset view" onClick={() => setView({ k: 1, x: 0, y: 0 })}>
-          ⟲
-        </button>
-        <button className="tool-btn" aria-label="Zoom in" onClick={() => setView((v) => ({ ...v, k: Math.min(5, v.k * 1.3) }))}>
-          +
-        </button>
+    <div className="h-full flex flex-col min-h-0">
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-line bg-surface shrink-0">
+        <div className="inline-flex rounded-lg border border-line p-0.5 text-xs" role="tablist" aria-label="Map view">
+          {(
+            [
+              ["lineage", "Lineage"],
+              ["topic", "Topic context"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={tab === v}
+              onClick={() => setTab(v)}
+              className={`px-2.5 py-0.5 rounded-md whitespace-nowrap ${tab === v ? "bg-surface-2 text-ink font-medium" : "text-ink-3 hover:text-ink"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-[0.7rem] text-ink-3 truncate hidden sm:inline">
+          {tab === "lineage" ? "Older work on the left, newer on the right. Click a card for details." : "Where these papers sit, where their ideas came from, and where they went."}
+        </span>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col @3xl:flex-row">
-        <div className="relative flex-1 min-h-[260px] bg-surface-2">
-          {loading && <p className="absolute inset-x-0 top-4 text-center text-sm text-ink-3 animate-pulse">Tracing references and citations in OpenAlex…</p>}
-          {graph?.error && graph.key === key && <p className="absolute inset-x-0 top-4 text-center text-sm text-bad">{graph.error}</p>}
-          {uploadsOnly && !merged.nodes.length && (
-            <p className="absolute inset-x-6 top-6 text-center text-sm text-ink-3">
-              The map traces citations through OpenAlex, so it needs at least one catalogue paper open. Your ideas from the
-              Ideas mode also appear here.
-            </p>
-          )}
-          <svg
-            ref={svg}
-            role="img"
-            aria-label="Connection map of the open papers"
-            className="w-full h-full touch-none select-none cursor-grab active:cursor-grabbing"
-            viewBox={`${vx} ${vy} ${vb.w} ${vb.h}`}
-            preserveAspectRatio="xMidYMid meet"
-            onWheel={(e) => setView((v) => ({ ...v, k: Math.min(5, Math.max(0.5, v.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12))) }))}
-            onPointerDown={(e) => {
-              if ((e.target as Element).closest("[data-node]")) return;
-              (e.currentTarget as Element).setPointerCapture(e.pointerId);
-              drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-            }}
-            onPointerMove={(e) => {
-              const d = drag.current;
-              const el = svg.current;
-              if (!d || !el) return;
-              const scale = vb.w / el.clientWidth;
-              setView((v) => ({ ...v, x: d.vx - (e.clientX - d.x) * scale, y: d.vy - (e.clientY - d.y) * scale }));
-            }}
-            onPointerUp={() => (drag.current = null)}
-            onClick={(e) => !(e.target as Element).closest("[data-node]") && setSel(null)}
-          >
-            {merged.edges.map((e, i) => {
-              const a = byId.get(e.source), b = byId.get(e.target);
-              if (!a || !b) return null;
-              const lit = sel && (e.source === sel || e.target === sel);
-              return (
-                <line
-                  key={i}
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  stroke={lit ? "var(--accent)" : "var(--text-3)"}
-                  strokeOpacity={sel ? (lit ? 0.9 : 0.12) : 0.35}
-                  strokeWidth={lit ? 1.6 : 1}
-                  strokeDasharray={e.dashed ? "4 3" : undefined}
-                />
-              );
-            })}
-            {pts.map((p) => {
-              const dim = sel && p.id !== sel && !near?.has(p.id);
-              const showLabel = p.kind === "open" || p.kind === "idea" || p.kind === "shared" || p.id === sel || near?.has(p.id);
-              return (
-                <g
-                  key={p.id}
-                  data-node
-                  transform={`translate(${p.x} ${p.y})`}
-                  opacity={dim ? 0.25 : 1}
-                  className="cursor-pointer"
-                  onClick={() => setSel(p.id === sel ? null : p.id)}
-                  tabIndex={0}
-                  role="button"
-                  aria-label={`${STYLE[p.kind].label}: ${p.title}`}
-                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setSel(p.id)}
-                >
-                  <title>{`${p.title}${p.year ? ` (${p.year})` : ""}${p.kind !== "idea" ? ` · ${p.cited_by.toLocaleString("en-GB")} citations` : ""}`}</title>
-                  {p.kind === "idea" ? (
-                    <rect x={-p.r} y={-p.r} width={p.r * 2} height={p.r * 2} transform="rotate(45)" fill={STYLE.idea.fill} stroke="var(--surface)" strokeWidth={2} />
-                  ) : (
-                    <circle r={p.r} fill={STYLE[p.kind].fill} stroke={p.retracted ? "var(--bad)" : "var(--surface)"} strokeWidth={p.retracted ? 3 : 2} />
-                  )}
-                  {showLabel && (
-                    <text
-                      y={p.r + 12}
-                      textAnchor="middle"
-                      fontSize={p.kind === "open" ? 11 : 9.5}
-                      fontWeight={p.kind === "open" ? 600 : 400}
-                      fill="var(--text)"
-                      stroke="var(--surface-2)"
-                      strokeWidth={3}
-                      paintOrder="stroke"
+      {tab === "topic" ? (
+        <TopicContext ids={ids} papers={papers} onOpen={onOpen} />
+      ) : (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="relative flex-1 min-h-0 overflow-auto bg-surface-2" onClick={() => setSel(null)}>
+            {loading && <p className="p-6 text-sm text-ink-3 animate-pulse">Tracing references and citations in OpenAlex…</p>}
+            {graph?.error && graph.key === key && <p className="p-6 text-sm text-bad">{graph.error}</p>}
+            {!ids.length && !merged.nodes.length && (
+              <p className="p-6 text-sm text-ink-3">
+                The lineage traces citations through OpenAlex, so it needs at least one catalogue paper open. Ideas from Ideas
+                mode also appear here.
+              </p>
+            )}
+            {L.placed.length > 0 && (
+              <div className="relative" style={{ width: L.width, height: L.height }}>
+                {/* year header */}
+                <div className="sticky top-0 z-20 h-[34px] bg-surface-2/95 backdrop-blur border-b border-line" style={{ width: L.width }}>
+                  {L.years.map((y, i) => (
+                    <div
+                      key={y}
+                      className="absolute top-0 h-full flex items-center justify-center text-[0.7rem] font-mono text-ink-3"
+                      style={{ left: LABEL_W + i * COL, width: COL }}
                     >
-                      {short(p.title, p.kind === "open" ? 38 : 30)}
-                    </text>
+                      {y}
+                      {i > 0 && y - L.years[i - 1] > 1 && (
+                        <span className="absolute left-0 text-ink-3/60" title={`${y - L.years[i - 1] - 1} years without linked papers`}>
+                          ⋯
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {L.hasIdeas && (
+                    <div
+                      className="absolute top-0 h-full flex items-center justify-center text-[0.7rem] font-semibold text-warn"
+                      style={{ left: LABEL_W + L.years.length * COL, width: COL }}
+                    >
+                      Ideas
+                    </div>
                   )}
-                </g>
-              );
-            })}
-          </svg>
-        </div>
-
-        <aside className="@3xl:w-72 shrink-0 border-t @3xl:border-t-0 @3xl:border-l border-line bg-surface overflow-y-auto max-h-[38%] @3xl:max-h-none p-3 text-sm">
-          {focus ? (
-            <div>
-              <div className="text-[0.65rem] font-semibold uppercase tracking-wider" style={{ color: STYLE[focus.kind].fill }}>
-                {STYLE[focus.kind].label}
+                </div>
+                {/* lanes */}
+                {L.laneTop.map((l, i) => (
+                  <div
+                    key={l.kind}
+                    className={`absolute left-0 ${i % 2 ? "bg-surface/40" : ""} border-b border-line/60`}
+                    style={{ top: l.top, height: l.height, width: L.width }}
+                  >
+                    <div
+                      className={`sticky left-0 z-10 h-full flex flex-col justify-center gap-0.5 ${narrow ? "px-1.5" : "px-3"} bg-surface-2/95 border-r border-line`}
+                      style={{ width: LABEL_W }}
+                      title={LANE[l.kind].hint}
+                    >
+                      <span className="flex items-center gap-1.5 text-[0.72rem] font-semibold text-ink leading-tight">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: LANE[l.kind].color }} />
+                        {LANE[l.kind].label}
+                      </span>
+                      {!narrow && <span className="text-[0.62rem] leading-tight text-ink-3">{LANE[l.kind].hint}</span>}
+                    </div>
+                  </div>
+                ))}
+                {/* edges */}
+                <svg className="absolute inset-0 pointer-events-none" width={L.width} height={L.height} aria-hidden="true">
+                  {merged.edges.map((e, i) => {
+                    const a = byId.get(e.source),
+                      b = byId.get(e.target);
+                    if (!a || !b) return null;
+                    const lit = near && near.has(e.source) && near.has(e.target) && (e.source === focusId || e.target === focusId);
+                    const [l, r] = a.x <= b.x ? [a, b] : [b, a];
+                    const sameCol = Math.abs(a.x - b.x) < 2;
+                    const x1 = sameCol ? l.x + CARD_W : l.x + CARD_W,
+                      y1 = l.y + CARD_H / 2;
+                    const x2 = sameCol ? r.x + CARD_W : r.x,
+                      y2 = r.y + CARD_H / 2;
+                    const dx = sameCol ? 40 : Math.max(30, (x2 - x1) / 2);
+                    const d = sameCol
+                      ? `M${x1},${y1} C${x1 + dx},${y1} ${x2 + dx},${y2} ${x2},${y2}`
+                      : `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+                    return (
+                      <path
+                        key={i}
+                        d={d}
+                        fill="none"
+                        stroke={lit ? "var(--accent)" : "var(--text-3)"}
+                        strokeOpacity={focusId ? (lit ? 0.9 : 0.06) : 0.22}
+                        strokeWidth={lit ? 1.8 : 1}
+                        strokeDasharray={e.dashed ? "4 4" : undefined}
+                      />
+                    );
+                  })}
+                </svg>
+                {/* cards */}
+                {L.placed.map((n) => {
+                  const dim = near && !near.has(n.id);
+                  return (
+                    <button
+                      key={n.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSel(n.id === sel ? null : n.id);
+                      }}
+                      onMouseEnter={() => setHover(n.id)}
+                      onMouseLeave={() => setHover(null)}
+                      onFocus={() => setHover(n.id)}
+                      onBlur={() => setHover(null)}
+                      className={`absolute z-[5] text-left rounded-xl border bg-surface shadow-sm px-2.5 py-1.5 transition-[opacity,box-shadow,border-color] duration-150 hover:shadow-md ${
+                        sel === n.id ? "border-accent ring-2 ring-accent/30" : "border-line"
+                      } ${dim ? "opacity-35" : "opacity-100"}`}
+                      style={{ left: n.x, top: n.y, width: CARD_W, height: CARD_H, borderLeft: `3px solid ${LANE[n.kind].color}` }}
+                      title={n.title}
+                    >
+                      <span className="text-[0.72rem] leading-snug font-medium text-ink line-clamp-2">{n.title}</span>
+                      <span className="block mt-0.5 text-[0.62rem] text-ink-3 truncate">
+                        {n.kind === "idea"
+                          ? n.verdict
+                            ? VERDICT[n.verdict]
+                            : "idea"
+                          : `${n.year ?? "n.d."} · ${n.cited_by.toLocaleString("en-GB")} cites${n.retracted ? " · retracted" : ""}`}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-              <h3 className="mt-1 font-semibold leading-snug">{focus.title}</h3>
-              {focus.kind === "idea" ? (
-                <p className="mt-1 text-xs text-ink-2">{focus.verdict ? VERDICT[focus.verdict] : ""}. Dashed lines lead to the closest existing work.</p>
-              ) : (
-                <p className="mt-1 text-xs text-ink-3">
-                  {[focus.year, `${focus.cited_by.toLocaleString("en-GB")} citations`, focus.retracted ? "retracted" : null].filter(Boolean).join(" · ")}
-                </p>
-              )}
-              <p className="mt-2 text-xs text-ink-2">{STYLE[focus.kind].hint}. Linked to {near?.size || 0} other nodes.</p>
+            )}
+          </div>
+          {focus && (
+            <div className="border-t border-line bg-surface px-4 py-3 text-sm flex flex-wrap items-start gap-3 shrink-0">
+              <div className="min-w-0 flex-1">
+                <div className="text-[0.65rem] font-semibold uppercase tracking-wider" style={{ color: LANE[focus.kind].color }}>
+                  {LANE[focus.kind].label}
+                </div>
+                <div className="font-semibold leading-snug">{focus.title}</div>
+                <div className="text-xs text-ink-3 mt-0.5">
+                  {focus.kind === "idea"
+                    ? `${focus.verdict ? VERDICT[focus.verdict] : ""}. Dashed lines lead to the closest existing work.`
+                    : `${focus.year ?? "n.d."} · ${focus.cited_by.toLocaleString("en-GB")} citations · linked to ${(near?.size || 1) - 1} others on this map`}
+                </div>
+              </div>
               {focus.kind !== "idea" && (
-                <button onClick={() => onOpen(focus.id)} className="mt-3 rounded-lg bg-accent text-white px-3 h-8 text-xs font-medium">
+                <button onClick={() => onOpen(focus.id)} className="rounded-lg bg-accent text-white px-3 h-8 text-xs font-medium shrink-0">
                   {focus.kind === "open" ? "Show in reader" : "Open in workspace"}
                 </button>
               )}
             </div>
-          ) : (
-            <div>
-              <h3 className="font-semibold">Shared foundations</h3>
-              <p className="mt-1 text-xs text-ink-3">Works that several of your open papers cite. Often the place to start reading.</p>
-              {shared.length === 0 && (
-                <p className="mt-2 text-xs text-ink-3">
-                  {ids.length < 2 ? "Open two or more papers to find what they share." : "These papers don't cite a common work."}
-                </p>
-              )}
-              <ul className="mt-2 space-y-1.5">
-                {shared.slice(0, 12).map(({ p, n }) => (
-                  <li key={p.id}>
-                    <button onClick={() => setSel(p.id)} className="text-left w-full rounded-lg px-2 py-1.5 hover:bg-surface-2">
-                      <div className="text-xs font-medium leading-snug line-clamp-2">{p.title}</div>
-                      <div className="text-[0.68rem] text-ink-3">
-                        cited by {n} of your papers · {p.year ?? "n.d."} · {p.cited_by.toLocaleString("en-GB")} citations
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-3 text-[0.7rem] text-ink-3">Click a node for details. Drag to pan, scroll to zoom. Ideas from the Ideas mode join the map with their closest prior work.</p>
-            </div>
           )}
-        </aside>
-      </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function Spark({ pts, field = "per_million", label }: { pts: SeriesPoint[]; field?: "per_million" | "count"; label: string }) {
+  const vals = pts.map((p) => (field === "count" ? p.count : (p.per_million ?? 0)));
+  const max = Math.max(...vals, 1);
+  const w = 240,
+    h = 48;
+  const x = (i: number) => (i / Math.max(1, pts.length - 1)) * w;
+  const y = (v: number) => h - 3 - (v / max) * (h - 8);
+  const line = vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const peak = vals.indexOf(max);
+  return (
+    <figure>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" role="img" aria-label={label}>
+        <path d={`${line}L${w},${h}L0,${h}Z`} fill="var(--accent)" fillOpacity="0.1" />
+        <path d={line} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={x(peak)} cy={y(max)} r="3" fill="var(--accent)" />
+      </svg>
+      <figcaption className="flex justify-between text-[0.62rem] font-mono text-ink-3">
+        <span>{pts[0]?.year}</span>
+        <span>peak {pts[peak]?.year}</span>
+        <span>{pts.at(-1)?.year}</span>
+      </figcaption>
+    </figure>
+  );
+}
+
+function TopicContext({ ids, papers, onOpen }: { ids: string[]; papers: OpenPaper[]; onOpen: (id: string) => void }) {
+  const key = ids.slice(0, 5).join(",");
+  const [data, setData] = useState<{ key: string; d: Lineage | null; error?: string } | null>(null);
+  useEffect(() => {
+    if (!key) return;
+    let live = true;
+    fetchLineage(key.split(","))
+      .then((d) => live && setData({ key, d }))
+      .catch((e) => live && setData({ key, d: null, error: e instanceof Error ? e.message : "Could not load the topic context." }));
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  const title = (id: string) => papers.find((p) => p.id === id)?.title || id;
+  if (!key) return <p className="p-6 text-sm text-ink-3">Open a catalogue paper to see its topic context.</p>;
+  if (!data || data.key !== key) return <p className="p-6 text-sm text-ink-3 animate-pulse">Reading the field from OpenAlex…</p>;
+  if (!data.d) return <p className="p-6 text-sm text-bad">{data.error}</p>;
+  const d = data.d;
+  const maxSpread = Math.max(...d.spread.map((s) => s.count), 1);
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto bg-surface-2 p-3 @container">
+      <div className="grid gap-3 @2xl:grid-cols-2">
+        {d.terms.map((t) => (
+          <section key={t.term} className="rounded-2xl border border-line bg-surface p-4">
+            <div className="text-[0.65rem] font-semibold uppercase tracking-wider text-ink-3">Key term</div>
+            <h3 className="mt-0.5 font-semibold text-lg leading-tight">{t.term}</h3>
+            <p className="mt-1 text-xs text-ink-2">
+              {t.first_year ? (
+                <>
+                  In steady use since <strong className="text-ink">{t.first_year}</strong> ·{" "}
+                </>
+              ) : null}
+              {t.total.toLocaleString("en-GB")} papers use it
+            </p>
+            <div className="mt-2">
+              <Spark pts={t.trend} field="count" label={`Papers per year using “${t.term}”`} />
+            </div>
+            {t.early_papers.length > 0 && (
+              <div className="mt-3">
+                <div className="text-[0.65rem] font-semibold uppercase tracking-wider text-ink-3">Early influential papers</div>
+                <ul className="mt-1 space-y-1">
+                  {t.early_papers.map((p) => (
+                    <li key={p.id}>
+                      <button onClick={() => onOpen(p.id)} className="w-full text-left rounded-lg px-2 py-1 -mx-2 hover:bg-surface-2">
+                        <span className="block text-xs font-medium leading-snug line-clamp-2">{p.title}</span>
+                        <span className="block text-[0.65rem] text-ink-3">
+                          {p.year} · {p.cited_by.toLocaleString("en-GB")} citations
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p className="mt-2 text-[0.62rem] text-ink-3">From: {t.papers.map(title).join("; ")}</p>
+          </section>
+        ))}
+
+        {d.topics.map((t) => (
+          <section key={t.id} className="rounded-2xl border border-line bg-surface p-4">
+            <div className="text-[0.65rem] text-ink-3">{t.path.join(" › ")}</div>
+            <h3 className="mt-0.5 font-semibold text-lg leading-tight">{t.name}</h3>
+            <p className="mt-1 text-xs text-ink-2">
+              {t.works_count?.toLocaleString("en-GB")} works · share of all papers per year
+            </p>
+            <div className="mt-2">
+              <Spark pts={t.trend} label={`${t.name}: papers per million published`} />
+            </div>
+            {t.related.length > 0 && (
+              <div className="mt-3">
+                <div className="text-[0.65rem] font-semibold uppercase tracking-wider text-ink-3">Neighbouring topics</div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {t.related.slice(0, 8).map((r) => (
+                    <Link
+                      key={r}
+                      href={`/topic/${topicSlug(r)}`}
+                      target="_blank"
+                      className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-[0.7rem] text-ink-2 hover:border-ink-3 hover:text-ink"
+                    >
+                      {r}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        ))}
+
+        {d.spread.length > 0 && (
+          <section className="rounded-2xl border border-line bg-surface p-4 @2xl:col-span-2">
+            <div className="text-[0.65rem] font-semibold uppercase tracking-wider text-ink-3">Where later work took these papers</div>
+            <p className="mt-0.5 text-xs text-ink-3">Topics of the papers that cite them</p>
+            <ul className="mt-3 space-y-1.5">
+              {d.spread.map((s) => (
+                <li key={s.topic} className="grid grid-cols-[minmax(0,12rem)_1fr_auto] items-center gap-2 text-xs">
+                  <span className="truncate text-ink-2" title={s.topic}>
+                    {s.topic}
+                  </span>
+                  <span className="h-2 rounded-full bg-surface-2 overflow-hidden">
+                    <span className="block h-full rounded-full bg-good" style={{ width: `${(s.count / maxSpread) * 100}%` }} />
+                  </span>
+                  <span className="font-mono text-ink-3 tabular-nums">{s.count}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+      <p className="mt-3 text-center text-[0.65rem] text-ink-3">
+        All data from {d.source}; nothing on this page is written by AI. “Steady use” is the first year with 3+ papers two years
+        running, because the earliest records are often misdated.
+      </p>
+    </div>
+  );
+}
+
+function useNarrow() {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)");
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return narrow;
 }

@@ -78,6 +78,14 @@ export function Matrix({
                       {r?.row ? (
                         <>
                           {r.row[c.key].text}{" "}
+                          {(r.row[c.key].unsupported_numbers || []).length > 0 && (
+                            <span
+                              className="inline-flex mx-0.5 rounded px-1 text-[0.65rem] font-medium bg-warn-soft text-warn"
+                              title={`Not found in the cited passages: ${r.row[c.key].unsupported_numbers!.join(", ")}. Check the page.`}
+                            >
+                              ⚠ {r.row[c.key].unsupported_numbers!.join(", ")}
+                            </span>
+                          )}
                           {r.row[c.key].cites.map((id) => {
                             const ev = r.evidence.find((e) => e.id === id);
                             if (!ev) return null;

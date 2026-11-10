@@ -44,6 +44,7 @@ class Media:
 
     mime_type: str
     data: str
+    label: str | None = None  # sent as text just before the media, e.g. "Page 4 of the paper:"
 
     @property
     def is_image(self) -> bool:
@@ -53,20 +54,27 @@ class Media:
 def _gemini_input(prompt: str, media: list[Media] | None):
     if not media:
         return prompt
-    blocks = [{"type": "image" if m.is_image else "document", "mime_type": m.mime_type, "data": m.data} for m in media]
+    blocks: list[dict] = []
+    for m in media:
+        if m.label:
+            blocks.append({"type": "text", "text": m.label})
+        blocks.append({"type": "image" if m.is_image else "document", "mime_type": m.mime_type, "data": m.data})
     return [*blocks, {"type": "text", "text": prompt}]
 
 
 def _anthropic_content(prompt: str, media: list[Media] | None):
     if not media:
         return prompt
-    blocks = [
-        {
-            "type": "image" if m.is_image else "document",
-            "source": {"type": "base64", "media_type": m.mime_type, "data": m.data},
-        }
-        for m in media
-    ]
+    blocks: list[dict] = []
+    for m in media:
+        if m.label:
+            blocks.append({"type": "text", "text": m.label})
+        blocks.append(
+            {
+                "type": "image" if m.is_image else "document",
+                "source": {"type": "base64", "media_type": m.mime_type, "data": m.data},
+            }
+        )
     return [*blocks, {"type": "text", "text": prompt}]
 
 
@@ -75,7 +83,14 @@ class LLM(Protocol):
     provider: str
 
     async def structured(
-        self, *, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None = None
+        self,
+        *,
+        tier: Tier,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        media: list[Media] | None = None,
+        effort: str | None = None,
     ) -> T: ...
 
     def stream_text(
@@ -112,20 +127,30 @@ class GeminiLLM:
         return s.gemini_strong_model, s.llm_strong_effort
 
     async def structured(
-        self, *, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None = None
+        self,
+        *,
+        tier: Tier,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        media: list[Media] | None = None,
+        effort: str | None = None,
     ) -> T:
         last: AgentError | None = None
         for attempt in range(_GEMINI_ATTEMPTS):
             try:
-                return await self._once(tier, system, prompt, schema, media)
+                return await self._once(tier, system, prompt, schema, media, effort)
             except _Transient as e:
                 last = e
                 await asyncio.sleep(1.5 * (attempt + 1))
         assert last is not None
         raise AgentError(str(last)) from last.__cause__
 
-    async def _once(self, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None) -> T:
+    async def _once(
+        self, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None, effort_override=None
+    ) -> T:
         model, effort = self._model(tier)
+        effort = effort_override or effort
         # Streamed: long generations (the writer) exceed the ~60 s idle limit of a plain request.
         parts: list[str] = []
         final = None
@@ -271,10 +296,18 @@ class AnthropicLLM:
         return s.anthropic_strong_model, s.llm_strong_effort
 
     async def structured(
-        self, *, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None = None
+        self,
+        *,
+        tier: Tier,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        media: list[Media] | None = None,
+        effort: str | None = None,
     ) -> T:
         anthropic = self._anthropic
-        model, effort = self._model(tier)
+        model, default_effort = self._model(tier)
+        effort = {"minimal": "low"}.get(effort or "", effort) or default_effort
         extra = {}
         if model in _FALLBACK_MODELS:
             extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}

@@ -19,7 +19,7 @@ export type FigureGuideProps = {
   status: Record<string, string>;
   onRead: (p: OpenPaper) => void;
   onAsk: (p: OpenPaper, f: FigureItem) => void;
-  onOpenPage: (id: string, page: number) => void;
+  onOpenPage: (id: string, page: number, text?: string) => void;
 };
 
 export function Reader({
@@ -253,7 +253,7 @@ function PaperView({
             status={figStatus}
             onClose={() => setGuide(false)}
             onRetry={() => figures.onRead(p)}
-            onOpen={(f) => figures.onOpenPage(p.id, f.page)}
+            onOpen={(f) => figures.onOpenPage(p.id, f.page, f.caption ?? undefined)}
             onAsk={(f) => figures.onAsk(p, f)}
           />
         )}
@@ -418,6 +418,15 @@ function FigureGuide({
                 </span>
                 <span className="font-semibold text-ink">{f.label}</span>
                 <span className="text-ink-3">· {f.figure_kind} · p.{f.page}</span>
+                {f.caption ? (
+                  <span className="ml-auto text-good" title={`Label and page checked against the printed caption: “${f.caption}”`}>
+                    ✓ caption
+                  </span>
+                ) : (
+                  <span className="ml-auto text-ink-3" title="No printed caption was found for this label; the page and label are the vision model's reading">
+                    unchecked
+                  </span>
+                )}
               </div>
               <p className="mt-1 text-ink-2 leading-snug">{f.text.replace(/^.*?Shows:\s*/, "").replace(/\s*Takeaway:.*$/, "")}</p>
               {/Takeaway:/.test(f.text) && (
@@ -434,7 +443,8 @@ function FigureGuide({
         ))}
         {items && items.length > 0 && (
           <p className="text-[0.7rem] text-ink-3 leading-snug">
-            Read by a vision model, so check numbers against the page. Tap a card to jump to its page.
+            Descriptions are read by a vision model, so check numbers against the page. “✓ caption” means the label and
+            page were confirmed against the caption printed in the PDF. Tap a card to jump to it.
           </p>
         )}
       </div>
