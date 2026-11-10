@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getDoc } from "@/lib/docstore";
-import type { Highlight, OpenPaper } from "@/lib/workspace";
+import type { FigureItem, Highlight, OpenPaper } from "@/lib/workspace";
 import { pdfUrl } from "@/lib/workspace";
 import type { Jump, PdfSelection, SelAction } from "./pdf-view";
 
@@ -11,6 +11,16 @@ const PdfView = dynamic(() => import("./pdf-view"), {
   ssr: false,
   loading: () => <p className="p-6 text-sm text-ink-3 animate-pulse">Loading viewer…</p>,
 });
+
+export type ReaderView = "paper" | "matrix" | "map";
+
+export type FigureGuideProps = {
+  items: Record<string, FigureItem[]>;
+  status: Record<string, string>;
+  onRead: (p: OpenPaper) => void;
+  onAsk: (p: OpenPaper, f: FigureItem) => void;
+  onOpenPage: (id: string, page: number) => void;
+};
 
 export function Reader({
   papers,
@@ -20,6 +30,8 @@ export function Reader({
   view,
   setView,
   matrix,
+  map,
+  figures,
   onActivate,
   onClose,
   onAction,
@@ -29,9 +41,11 @@ export function Reader({
   activeId: string | null;
   highlights: Highlight[];
   jump: (NonNullable<Jump> & { id: string }) | null;
-  view: "paper" | "matrix";
-  setView: (v: "paper" | "matrix") => void;
+  view: ReaderView;
+  setView: (v: ReaderView) => void;
   matrix: React.ReactNode;
+  map: React.ReactNode;
+  figures: FigureGuideProps;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onAction: (p: OpenPaper, a: SelAction, s: PdfSelection, color?: Highlight["color"]) => void;
@@ -42,19 +56,26 @@ export function Reader({
   return (
     <div className="h-full flex flex-col min-h-0">
       <div className="flex items-end gap-1 px-2 pt-2 border-b border-line overflow-x-auto shrink-0" role="tablist">
-        {papers.length > 0 && (
-          <button
-            role="tab"
-            aria-selected={view === "matrix"}
-            onClick={() => setView("matrix")}
-            className={`shrink-0 rounded-t-lg border border-b-0 px-3 py-1.5 text-xs font-medium ${
-              view === "matrix" ? "bg-surface border-line text-accent-ink" : "border-transparent text-ink-3 hover:text-ink"
-            }`}
-            title="Evidence matrix: compare the open papers in one table"
-          >
-            ▦ Matrix
-          </button>
-        )}
+        {papers.length > 0 &&
+          (
+            [
+              ["matrix", "▦ Matrix", "Evidence matrix: compare the open papers in one table"],
+              ["map", "⌘ Map", "Connection map: how the open papers, their sources and your ideas link up"],
+            ] as const
+          ).map(([v, label, hint]) => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={`shrink-0 rounded-t-lg border border-b-0 px-3 py-1.5 text-xs font-medium ${
+                view === v ? "bg-surface border-line text-accent-ink" : "border-transparent text-ink-3 hover:text-ink"
+              }`}
+              title={hint}
+            >
+              {label}
+            </button>
+          ))}
         {papers.map((x) => (
           <div
             key={x.id}
@@ -90,6 +111,8 @@ export function Reader({
 
       {view === "matrix" && papers.length > 0 ? (
         <div className="flex-1 min-h-0">{matrix}</div>
+      ) : view === "map" && papers.length > 0 ? (
+        <div className="flex-1 min-h-0">{map}</div>
       ) : !p ? (
         <Empty onAttach={onAttach} />
       ) : (
@@ -100,6 +123,7 @@ export function Reader({
           jump={jump && jump.id === p.id ? jump : null}
           onAction={(a, s, c) => onAction(p, a, s, c)}
           onAttach={onAttach}
+          figures={figures}
         />
       )}
     </div>
@@ -112,15 +136,20 @@ function PaperView({
   jump,
   onAction,
   onAttach,
+  figures,
 }: {
   p: OpenPaper;
   highlights: Highlight[];
   jump: Jump;
   onAction: (a: SelAction, s: PdfSelection, color?: Highlight["color"]) => void;
   onAttach: (file: File, attachTo?: OpenPaper) => void;
+  figures: FigureGuideProps;
 }) {
   const [local, setLocal] = useState<ArrayBuffer | null>(null);
   const [view, setView] = useState<"pdf" | "abstract">("pdf");
+  const [guide, setGuide] = useState(false);
+  const figs = figures.items[p.id];
+  const figStatus = figures.status[p.id];
 
   useEffect(() => {
     let live = true;
@@ -176,9 +205,32 @@ function PaperView({
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 bg-surface-2">
+      <div className="flex-1 min-h-0 bg-surface-2 relative">
         {showPdf ? (
-          <PdfView file={file} highlights={highlights} jump={jump} onAction={onAction} sourceUrl={p.local ? null : p.oa_url || doi} />
+          <PdfView
+            file={file}
+            highlights={highlights}
+            jump={jump}
+            onAction={onAction}
+            sourceUrl={p.local ? null : p.oa_url || doi}
+            extra={
+              <button
+                onClick={() => {
+                  setGuide((g) => !g);
+                  if (!figs && figStatus !== "loading") figures.onRead(p);
+                }}
+                aria-pressed={guide}
+                className={`tool-btn gap-1 px-2 ${guide ? "!bg-vision !text-white" : "text-vision"}`}
+                title="Figure guide: a vision model reads every figure, table and diagram"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="2" />
+                  <path d="m3 16 5-5 4 4 3-3 6 6M15.5 9.5h.01" />
+                </svg>
+                <span className="hidden sm:inline">Figures{figs ? ` · ${figs.length}` : ""}</span>
+              </button>
+            }
+          />
         ) : p.local && !local ? (
           <p className="p-6 text-sm text-ink-3 animate-pulse">Opening your PDF…</p>
         ) : (
@@ -194,6 +246,16 @@ function PaperView({
               <p className="mt-2 leading-relaxed">{p.abstract || "No abstract available."}</p>
             </article>
           </div>
+        )}
+        {guide && showPdf && (
+          <FigureGuide
+            items={figs}
+            status={figStatus}
+            onClose={() => setGuide(false)}
+            onRetry={() => figures.onRead(p)}
+            onOpen={(f) => figures.onOpenPage(p.id, f.page)}
+            onAsk={(f) => figures.onAsk(p, f)}
+          />
         )}
       </div>
     </>
@@ -302,4 +364,80 @@ function SourceBadge({ p }: { p: OpenPaper }) {
   if (p.fulltext === "no_pdf" || p.fulltext === "failed")
     return <span className="rounded px-1.5 py-0.5 bg-surface-2 text-ink-3">Abstract only</span>;
   return null;
+}
+
+const FIG_ICON: Record<string, string> = { chart: "▥", diagram: "◇", flowchart: "⇢", table: "▦", image: "▣", equation: "∑", other: "▢" };
+
+function FigureGuide({
+  items,
+  status,
+  onClose,
+  onRetry,
+  onOpen,
+  onAsk,
+}: {
+  items?: FigureItem[];
+  status?: string;
+  onClose: () => void;
+  onRetry: () => void;
+  onOpen: (f: FigureItem) => void;
+  onAsk: (f: FigureItem) => void;
+}) {
+  return (
+    <aside
+      aria-label="Figure guide"
+      className="absolute z-20 top-10 bottom-0 right-0 w-full sm:w-80 border-l border-line bg-surface shadow-xl flex flex-col"
+    >
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-line shrink-0">
+        <span className="text-sm font-semibold">Figure guide</span>
+        <span className="rounded px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wider bg-vision-soft text-vision">vision</span>
+        <span className="flex-1" />
+        <button onClick={onClose} aria-label="Close figure guide" className="tool-btn">
+          ×
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+        {status === "loading" && (
+          <p className="text-sm text-ink-3 animate-pulse">Looking at the figures, tables and diagrams… (10–20 s)</p>
+        )}
+        {status && status !== "loading" && (
+          <div className="rounded-lg bg-bad-soft text-bad text-xs px-3 py-2">
+            {status}{" "}
+            <button onClick={onRetry} className="underline">
+              Try again
+            </button>
+          </div>
+        )}
+        {items && items.length === 0 && <p className="text-sm text-ink-3">No figures or tables were found on the pages checked.</p>}
+        {items?.map((f) => (
+          <div key={f.id} className="rounded-xl border border-line p-3 text-sm hover:border-vision/50">
+            <button onClick={() => onOpen(f)} className="w-full text-left">
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-vision" aria-hidden="true">
+                  {FIG_ICON[f.figure_kind] || FIG_ICON.other}
+                </span>
+                <span className="font-semibold text-ink">{f.label}</span>
+                <span className="text-ink-3">· {f.figure_kind} · p.{f.page}</span>
+              </div>
+              <p className="mt-1 text-ink-2 leading-snug">{f.text.replace(/^.*?Shows:\s*/, "").replace(/\s*Takeaway:.*$/, "")}</p>
+              {/Takeaway:/.test(f.text) && (
+                <p className="mt-1 text-ink leading-snug">
+                  <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-ink-3">Takeaway </span>
+                  {f.text.replace(/^.*Takeaway:\s*/, "")}
+                </p>
+              )}
+            </button>
+            <button onClick={() => onAsk(f)} className="mt-2 text-xs font-medium text-accent-ink hover:underline">
+              Ask Copilot about this →
+            </button>
+          </div>
+        ))}
+        {items && items.length > 0 && (
+          <p className="text-[0.7rem] text-ink-3 leading-snug">
+            Read by a vision model, so check numbers against the page. Tap a card to jump to its page.
+          </p>
+        )}
+      </div>
+    </aside>
+  );
 }

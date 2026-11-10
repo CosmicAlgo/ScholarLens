@@ -5,19 +5,22 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { track } from "@/components/analytics";
 import { CopilotPanel, type PendingSelection } from "@/components/workspace/copilot-panel";
 import { Library } from "@/components/workspace/library";
+import { ConnectionMap } from "@/components/workspace/map";
 import { Matrix } from "@/components/workspace/matrix";
 import { Notes } from "@/components/workspace/notes";
 import type { PdfSelection, SelAction } from "@/components/workspace/pdf-view";
-import { Reader } from "@/components/workspace/reader";
+import { Reader, type ReaderView } from "@/components/workspace/reader";
 import { fetchPaper, type Paper } from "@/lib/api";
-import { deleteDoc, docId, getDoc, putDoc, readPdf } from "@/lib/docstore";
+import { deleteDoc, docId, figurePages, getDoc, putDoc, readPdf, renderPages } from "@/lib/docstore";
 import {
   askCopilot,
   EMPTY,
   extractRow,
   loadState,
   prepareFulltext,
+  readFigures,
   saveState,
+  type FigureItem,
   type Highlight,
   type Message,
   type Mode,
@@ -36,7 +39,8 @@ export function WorkspaceClient() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pane, setPane] = useState<Pane>("library");
-  const [readerView, setReaderView] = useState<"paper" | "matrix">("paper");
+  const [readerView, setReaderView] = useState<ReaderView>("paper");
+  const [figStatus, setFigStatus] = useState<Record<string, string>>({});
   const [jump, setJump] = useState<{ id: string; page: number; text?: string; nonce: number } | null>(null);
   const [pending, setPending] = useState<PendingSelection | null>(null);
   const [focusNonce, setFocusNonce] = useState(0);
@@ -166,7 +170,9 @@ export function WorkspaceClient() {
   }
 
   async function send(text: string, mode: Mode, selection?: Selection | null) {
-    const sel = selection ?? (pending ? { paper_id: pending.paper_id, page: pending.page, text: pending.text } : null);
+    const sel =
+      selection ??
+      (pending ? { paper_id: pending.paper_id, page: pending.page, text: pending.text, ...(pending.image ? { image: pending.image } : {}) } : null);
     setPending(null);
     const ctrl = new AbortController();
     abort.current = ctrl;
@@ -223,10 +229,11 @@ export function WorkspaceClient() {
   }
 
   function onAction(p: OpenPaper, a: SelAction, sel: PdfSelection, color?: Highlight["color"]) {
-    const selection = { paper_id: p.id, page: sel.page, text: sel.text };
-    track("selection_action", { action: a });
+    const selection = { paper_id: p.id, page: sel.page, text: sel.text, ...(sel.image ? { image: sel.image } : {}) };
+    track("selection_action", { action: a, figure: !!sel.image });
     if (a === "highlight") {
-      const h: Highlight = { id: crypto.randomUUID(), paper_id: p.id, title: p.title, page: sel.page, text: sel.text, rects: sel.rects, color: color || "yellow", at: Date.now() };
+      const text = sel.image ? `[Figure] ${sel.text}`.trim() : sel.text;
+      const h: Highlight = { id: crypto.randomUUID(), paper_id: p.id, title: p.title, page: sel.page, text, rects: sel.rects, color: color || "yellow", at: Date.now() };
       return setS((c) => ({ ...c, highlights: [...c.highlights, h] }));
     }
     if (a === "ask") {
@@ -235,9 +242,17 @@ export function WorkspaceClient() {
       return setFocusNonce((n) => n + 1);
     }
     if (busy) return setNotice({ text: "Copilot is still answering. Try again in a moment.", tone: "info" });
-    if (a === "explain") send("Explain this passage in plain language, with the context from the paper.", "explain", selection);
+    const what = sel.image ? "figure" : "passage";
+    if (a === "explain")
+      send(
+        sel.image
+          ? "Explain this figure: what it shows, how to read it, and what it means for the paper's argument."
+          : "Explain this passage in plain language, with the context from the paper.",
+        "explain",
+        selection,
+      );
     if (a === "verify") send("Is this claim supported or contradicted by other work?", "verify", selection);
-    if (a === "related") send("Find related work on what this passage describes.", "related", selection);
+    if (a === "related") send(`Find related work on what this ${what} describes.`, "related", selection);
   }
 
   async function fillMatrix(ids: string[]) {
@@ -259,6 +274,31 @@ export function WorkspaceClient() {
       }
     };
     await Promise.all([work(), work()]); // two rows at a time
+  }
+
+  async function readFiguresOf(p: OpenPaper) {
+    setFigStatus((m) => ({ ...m, [p.id]: "loading" }));
+    track("figures_read", { local: !!p.local });
+    try {
+      let images: { page: number; data: string }[] | undefined;
+      if (p.local) {
+        const d = await getDoc(p.id);
+        if (!d) throw new Error("This PDF is no longer stored in this browser.");
+        const pages = figurePages(d.passages, 6);
+        images = await renderPages(d.data, pages.length ? pages : [1, 2, 3].filter((n) => n <= d.pages));
+      }
+      const items = await readFigures(p.id, p.title, images);
+      setS((c) => ({ ...c, figures: { ...c.figures, [p.id]: items } }));
+      setFigStatus((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== p.id)));
+    } catch (e) {
+      setFigStatus((m) => ({ ...m, [p.id]: e instanceof Error ? e.message : "Could not read the figures." }));
+    }
+  }
+
+  function askFigure(p: OpenPaper, f: FigureItem) {
+    setPending({ paper_id: p.id, page: f.page, text: `${f.label} (${f.figure_kind}, read by a vision model): ${f.text}`, title: p.title });
+    setPane("copilot");
+    setFocusNonce((n) => n + 1);
   }
 
   const h = { openPage, openPaper: openById };
@@ -286,6 +326,8 @@ export function WorkspaceClient() {
       view={readerView}
       setView={setReaderView}
       matrix={<Matrix papers={s.papers} rows={s.matrix} status={matrixStatus} onFill={fillMatrix} openPage={openPage} />}
+      map={<ConnectionMap papers={s.papers} messages={s.messages} onOpen={openById} />}
+      figures={{ items: s.figures, status: figStatus, onRead: readFiguresOf, onAsk: askFigure, onOpenPage: openPage }}
       onActivate={(id) => setS((c) => ({ ...c, activeId: id }))}
       onClose={closePaper}
       onAction={onAction}

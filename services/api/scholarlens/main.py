@@ -4,6 +4,8 @@ Free, deterministic endpoints (no LLM cost): /api/trend, /api/compare, /api/sear
 Agent endpoint (LLM cost, rate-limited): POST /api/runs, streamed as Server-Sent Events.
 """
 
+import base64
+import binascii
 import json
 import logging
 import uuid
@@ -17,8 +19,8 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import fulltext, openalex
-from .agents import copilot, matrix, novelty
+from . import citegraph, fulltext, openalex
+from .agents import copilot, figures, matrix, novelty
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
 from .agents.llm import AgentError, make_llm
@@ -154,10 +156,25 @@ class Document(BaseModel):
     passages: list[Passage] = Field(max_length=600)
 
 
+MAX_IMAGE_B64 = 2_000_000  # ~1.5 MB JPEG
+
+
+def _jpeg(b64: str) -> str:
+    """Accept only a real base64 JPEG (the browser crops figures to JPEG)."""
+    try:
+        head = base64.b64decode(b64[:64], validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise HTTPException(422, "Image is not valid base64.") from e
+    if not head.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(422, "Image must be a JPEG.")
+    return b64
+
+
 class Selection(BaseModel):
     paper_id: str
     page: int = Field(ge=1, le=2000)
-    text: str = Field(min_length=1, max_length=4000)
+    text: str = Field(default="", max_length=4000)
+    image: str | None = Field(default=None, max_length=MAX_IMAGE_B64, description="base64 JPEG of a figure region")
 
 
 class CopilotRequest(BaseModel):
@@ -193,6 +210,10 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
         _valid_doc_id(p.id)
     if body.selection:
         _valid_doc_id(body.selection.paper_id)
+        if body.selection.image:
+            _jpeg(body.selection.image)
+        elif len(body.selection.text.strip()) < 1:
+            raise HTTPException(422, "Selection needs text or an image.")
     docs = _docs(body.documents)
     await _check_quota(x_client_id, "copilot")
     run_id = uuid.uuid4()
@@ -213,7 +234,9 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
                 "mode": body.mode,
                 "history": history,
                 "open_papers": [p.model_dump() for p in body.open_papers],
-                "selection": body.selection.model_dump() if body.selection else None,
+                "selection": body.selection.model_dump(exclude={"image"}) | {"image": bool(body.selection.image)}
+                if body.selection
+                else None,
             }
             titles = {p.id: p.title for p in body.open_papers}
             evidence.extend(copilot.selection_evidence(state["selection"], titles))
@@ -224,8 +247,9 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
                     evidence.extend((delta or {}).get("evidence", []))
             evidence = copilot.dedupe_evidence(evidence)
             yield {"event": "evidence", "data": json.dumps(evidence, default=str)}
+            image = body.selection.image if body.selection else None
             async for chunk in copilot.write_answer(
-                llm, message=body.message, mode=body.mode, history=history, evidence=evidence
+                llm, message=body.message, mode=body.mode, history=history, evidence=evidence, image=image
             ):
                 answer += chunk
                 yield {"event": "token", "data": json.dumps({"text": chunk})}
@@ -408,3 +432,82 @@ async def create_run(body: RunRequest, x_client_id: str = Header(default="anonym
                 )
 
     return EventSourceResponse(stream())
+
+
+# ---------- Figures (vision) and the connection map ----------
+
+
+class PageImage(BaseModel):
+    page: int = Field(ge=1, le=2000)
+    data: str = Field(max_length=MAX_IMAGE_B64)
+
+
+class FiguresRequest(BaseModel):
+    paper_id: str
+    title: str = Field(default="", max_length=500)
+    query: str | None = Field(default=None, max_length=500)
+    images: list[PageImage] = Field(default_factory=list, max_length=6)
+
+
+@app.post("/api/figures")
+async def paper_figures(body: FiguresRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    """A vision model reads the paper's figures, tables and diagrams. Uploaded PDFs send page images
+    rendered in the browser; catalogue papers are read from the server's copy of the PDF."""
+    llm = make_llm(get_settings())
+    if llm is None:
+        raise HTTPException(503, "AI is not enabled on this server yet.")
+    pid = _valid_doc_id(body.paper_id)
+    if pid.startswith("U") and not body.images:
+        raise HTTPException(422, "Uploaded documents need page images.")
+    for im in body.images:
+        _jpeg(im.data)
+    await _check_quota(x_client_id, "copilot")
+    deps = Deps(llm=llm, tools=LiveTools())
+    run_id = uuid.uuid4()
+    async with pool().connection() as conn:
+        await conn.execute(
+            "INSERT INTO agent_runs (id, question, client_id, kind) VALUES (%s, %s, %s, 'copilot')",
+            (run_id, f"figures {pid}", x_client_id),
+        )
+    status, error, items = "done", None, []
+    try:
+        if body.images:
+            imgs = [(im.page, im.data) for im in body.images]
+            items = await figures.read_image_figures(deps, pid, body.title, imgs, body.query)
+        else:
+            items = await figures.read_pdf_figures(deps, fulltext, pid, body.title, body.query, limit=8)
+    except AgentError as e:
+        status, error = "failed", str(e)[:500]
+        raise HTTPException(502, str(e)) from e
+    except fulltext.NoPdf as e:
+        status, error = "failed", "no pdf"
+        raise HTTPException(404, "No PDF is available for this paper.") from e
+    finally:
+        async with pool().connection() as conn:
+            await conn.execute(
+                """UPDATE agent_runs SET status=%s, error=%s, report=%s, input_tokens=%s, output_tokens=%s,
+                   finished_at=now() WHERE id=%s""",
+                (
+                    status,
+                    error,
+                    Jsonb({"figures": len(items)}),
+                    llm.usage.input_tokens,
+                    llm.usage.output_tokens,
+                    run_id,
+                ),
+            )
+    return {"paper_id": pid, "figures": items}
+
+
+class GraphRequest(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=8)
+
+
+@app.post("/api/graph")
+async def connection_graph(body: GraphRequest):
+    """How the open papers connect: shared references, top references and top citing works (no LLM)."""
+    ids = list(dict.fromkeys(_valid_id(i) for i in body.ids))
+    try:
+        return await citegraph.build(ids)
+    except openalex.OpenAlexError as e:
+        raise HTTPException(502, "OpenAlex is unavailable right now.") from e

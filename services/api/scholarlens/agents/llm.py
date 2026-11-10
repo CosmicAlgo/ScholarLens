@@ -38,13 +38,49 @@ class Usage:
     calls: int = 0
 
 
+@dataclass
+class Media:
+    """An image or PDF the model should look at (vision). `data` is base64."""
+
+    mime_type: str
+    data: str
+
+    @property
+    def is_image(self) -> bool:
+        return self.mime_type.startswith("image/")
+
+
+def _gemini_input(prompt: str, media: list[Media] | None):
+    if not media:
+        return prompt
+    blocks = [{"type": "image" if m.is_image else "document", "mime_type": m.mime_type, "data": m.data} for m in media]
+    return [*blocks, {"type": "text", "text": prompt}]
+
+
+def _anthropic_content(prompt: str, media: list[Media] | None):
+    if not media:
+        return prompt
+    blocks = [
+        {
+            "type": "image" if m.is_image else "document",
+            "source": {"type": "base64", "media_type": m.mime_type, "data": m.data},
+        }
+        for m in media
+    ]
+    return [*blocks, {"type": "text", "text": prompt}]
+
+
 class LLM(Protocol):
     usage: Usage
     provider: str
 
-    async def structured(self, *, tier: Tier, system: str, prompt: str, schema: type[T]) -> T: ...
+    async def structured(
+        self, *, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None = None
+    ) -> T: ...
 
-    def stream_text(self, *, tier: Tier, system: str, prompt: str) -> AsyncIterator[str]: ...
+    def stream_text(
+        self, *, tier: Tier, system: str, prompt: str, media: list[Media] | None = None
+    ) -> AsyncIterator[str]: ...
 
 
 def _status_error(status: int | None) -> AgentError:
@@ -75,18 +111,20 @@ class GeminiLLM:
             return s.gemini_fast_model, s.llm_fast_effort
         return s.gemini_strong_model, s.llm_strong_effort
 
-    async def structured(self, *, tier: Tier, system: str, prompt: str, schema: type[T]) -> T:
+    async def structured(
+        self, *, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None = None
+    ) -> T:
         last: AgentError | None = None
         for attempt in range(_GEMINI_ATTEMPTS):
             try:
-                return await self._once(tier, system, prompt, schema)
+                return await self._once(tier, system, prompt, schema, media)
             except _Transient as e:
                 last = e
                 await asyncio.sleep(1.5 * (attempt + 1))
         assert last is not None
         raise AgentError(str(last)) from last.__cause__
 
-    async def _once(self, tier: Tier, system: str, prompt: str, schema: type[T]) -> T:
+    async def _once(self, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None) -> T:
         model, effort = self._model(tier)
         # Streamed: long generations (the writer) exceed the ~60 s idle limit of a plain request.
         parts: list[str] = []
@@ -94,7 +132,7 @@ class GeminiLLM:
         try:
             stream = await self.client.aio.interactions.create(
                 model=model,
-                input=prompt,
+                input=_gemini_input(prompt, media),
                 system_instruction=system,
                 store=False,
                 stream=True,
@@ -141,7 +179,9 @@ class GeminiLLM:
         except ValidationError as e:
             raise _Transient("The model returned an invalid answer.") from e
 
-    async def stream_text(self, *, tier: Tier, system: str, prompt: str) -> AsyncIterator[str]:
+    async def stream_text(
+        self, *, tier: Tier, system: str, prompt: str, media: list[Media] | None = None
+    ) -> AsyncIterator[str]:
         """Plain-text streaming (Copilot answers). Retries only if nothing was produced yet."""
         model, effort = self._model(tier)
         for attempt in range(_GEMINI_ATTEMPTS):
@@ -150,7 +190,7 @@ class GeminiLLM:
             try:
                 stream = await self.client.aio.interactions.create(
                     model=model,
-                    input=prompt,
+                    input=_gemini_input(prompt, media),
                     system_instruction=system,
                     store=False,
                     stream=True,
@@ -230,7 +270,9 @@ class AnthropicLLM:
             return s.anthropic_fast_model, s.llm_fast_effort
         return s.anthropic_strong_model, s.llm_strong_effort
 
-    async def structured(self, *, tier: Tier, system: str, prompt: str, schema: type[T]) -> T:
+    async def structured(
+        self, *, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None = None
+    ) -> T:
         anthropic = self._anthropic
         model, effort = self._model(tier)
         extra = {}
@@ -241,7 +283,7 @@ class AnthropicLLM:
                 model=model,
                 max_tokens=_MAX_OUTPUT_TOKENS,
                 system=system,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": _anthropic_content(prompt, media)}],
                 output_format=schema,
                 output_config={"effort": effort},
                 **extra,
@@ -262,7 +304,9 @@ class AnthropicLLM:
             raise AgentError("The model returned an invalid answer.")
         return resp.parsed_output
 
-    async def stream_text(self, *, tier: Tier, system: str, prompt: str) -> AsyncIterator[str]:
+    async def stream_text(
+        self, *, tier: Tier, system: str, prompt: str, media: list[Media] | None = None
+    ) -> AsyncIterator[str]:
         anthropic = self._anthropic
         model, effort = self._model(tier)
         try:
@@ -270,7 +314,7 @@ class AnthropicLLM:
                 model=model,
                 max_tokens=_MAX_OUTPUT_TOKENS,
                 system=system,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": _anthropic_content(prompt, media)}],
                 output_config={"effort": effort},
             ) as stream:
                 async for text in stream.text_stream:

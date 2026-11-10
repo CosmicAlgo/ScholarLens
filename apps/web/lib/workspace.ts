@@ -16,11 +16,12 @@ export type OpenPaper = Pick<
   local?: boolean;
 };
 
-export type Job = { kind: "read_paper" | "search_literature" | "topic_trend"; target: string; query: string };
+export type Job = { kind: "read_paper" | "read_figures" | "search_literature" | "topic_trend"; target: string; query: string };
 export type JobStatus = Job & { status: "running" | "done" | "failed"; note?: string };
 
 export type EvidenceItem =
-  | { id: string; kind: "passage" | "highlight"; paper_id: string; title: string; page: number; text: string }
+  | { id: string; kind: "passage" | "highlight"; paper_id: string; title: string; page: number; text: string; figure?: boolean }
+  | { id: string; kind: "figure"; paper_id: string; title: string; page: number; label: string; figure_kind: string; text: string }
   | {
       id: string;
       kind: "paper";
@@ -51,7 +52,21 @@ export type NoveltyItem = {
   closest: { id: string; title: string; year: number | null; cited_by: number }[];
 };
 
-export type Selection = { paper_id: string; page: number; text: string };
+/** `image` is a base64 JPEG of a figure the user cut out. It is sent once and never stored. */
+export type Selection = { paper_id: string; page: number; text: string; image?: string; figure?: boolean };
+
+export type FigureItem = Extract<EvidenceItem, { kind: "figure" }>;
+
+export type GraphNode = {
+  id: string;
+  title: string;
+  year: number | null;
+  cited_by: number;
+  retracted?: boolean;
+  kind: "open" | "shared" | "reference" | "citing" | "idea" | "prior";
+  verdict?: NoveltyItem["verdict"];
+};
+export type Graph = { nodes: GraphNode[]; edges: { source: string; target: string }[] };
 
 export type Message =
   | { role: "user"; text: string; mode: Mode; at: number; selection?: Selection }
@@ -106,9 +121,10 @@ export type WorkspaceState = {
   recent: { id: string; title: string; at: number }[];
   highlights: Highlight[];
   matrix: Record<string, MatrixRow>;
+  figures: Record<string, FigureItem[]>;
 };
 
-export const EMPTY: WorkspaceState = { papers: [], activeId: null, page: {}, messages: [], recent: [], highlights: [], matrix: {} };
+export const EMPTY: WorkspaceState = { papers: [], activeId: null, page: {}, messages: [], recent: [], highlights: [], matrix: {}, figures: {} };
 const KEY = "sl_workspace_v1";
 
 export function loadState(): WorkspaceState {
@@ -132,7 +148,11 @@ export function loadState(): WorkspaceState {
 
 export function saveState(s: WorkspaceState) {
   try {
-    localStorage.setItem(KEY, JSON.stringify({ ...s, messages: s.messages.slice(-40) }));
+    // Figure images are large: keep only the fact that one was sent.
+    const messages = s.messages.slice(-40).map((m) =>
+      m.role === "user" && m.selection?.image ? { ...m, selection: { ...m.selection, image: undefined, figure: true } } : m,
+    );
+    localStorage.setItem(KEY, JSON.stringify({ ...s, messages }));
   } catch {}
 }
 
@@ -160,6 +180,30 @@ export async function extractRow(paper_id: string, title: string, passages?: Doc
     body: JSON.stringify({ paper_id, title, passages: passages || [] }),
   });
   if (!res.ok) throw new Error(await errorText(res, "Could not extract this paper."));
+  return res.json();
+}
+
+export async function readFigures(
+  paper_id: string,
+  title: string,
+  images?: { page: number; data: string }[],
+): Promise<FigureItem[]> {
+  const res = await fetch(`${API_URL}/api/figures`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+    body: JSON.stringify({ paper_id, title, images: images || [] }),
+  });
+  if (!res.ok) throw new Error(await errorText(res, "Could not read the figures."));
+  return (await res.json()).figures;
+}
+
+export async function fetchGraph(ids: string[]): Promise<Graph> {
+  const res = await fetch(`${API_URL}/api/graph`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error(await errorText(res, "Could not build the map."));
   return res.json();
 }
 
@@ -225,6 +269,7 @@ export async function askCopilot(body: CopilotBody, h: Handlers, signal: AbortSi
 
 export const JOB_LABEL: Record<Job["kind"], string> = {
   read_paper: "Read paper",
+  read_figures: "Read figures (vision)",
   search_literature: "Search literature",
   topic_trend: "Check trend",
 };

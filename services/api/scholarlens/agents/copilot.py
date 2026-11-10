@@ -5,13 +5,15 @@ Shaped like a cluster scheduler:
     master (LLM, fast)  ──plans jobs──►  Send(worker, job) × N   (run in parallel, no LLM)
                                               │ read_paper        → passages from the open paper, with pages
                                               │ search_literature → relevant papers (hybrid search, trust flags)
+                                              │ read_figures      → a vision model reads figures/tables
                                               │ topic_trend       → computed trend metrics
                                               ▼
-                                       evidence ledger (ids: S:, P:, M:)
+                                       evidence ledger (ids: S:, P:, M:, F:, H:)
                                               ▼
     writer (LLM, strong, streamed)  ──►  answer citing ledger ids  ──►  verifier (code)
 
-Workers are deterministic tools, so every fact in the ledger is real and traceable. The writer can
+Workers are deterministic tools (read_figures is the one exception: its output is a vision model's
+reading of the page, labelled as such), so every fact in the ledger is real and traceable. The writer can
 only cite ledger ids; the verifier flags any citation that isn't in the ledger.
 """
 
@@ -26,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from .deps import Deps
 from .evidence import paper_evidence, trend_evidence
-from .llm import LLM
+from .llm import LLM, Media
 
 Mode = Literal["ask", "explain", "critique", "brainstorm", "related", "compare", "verify"]
 MAX_JOBS = 5
@@ -34,10 +36,11 @@ MAX_PARALLEL = 4
 
 
 class Job(BaseModel):
-    kind: Literal["read_paper", "search_literature", "topic_trend"]
+    kind: Literal["read_paper", "read_figures", "search_literature", "topic_trend"]
     target: str = Field(
         default="",
-        description="read_paper: the paper id (e.g. W2741809807) from the open papers list; otherwise empty",
+        description="read_paper / read_figures: the paper id (e.g. W2741809807) from the open papers list; "
+        "otherwise empty",
     )
     query: str = Field(description="what to look for: a question for read_paper, a search phrase, or a topic name")
 
@@ -54,6 +57,8 @@ class OpenPaper(BaseModel):
 MASTER = """You are the scheduler of a research assistant. You never answer the user yourself.
 Plan the jobs that gather evidence for the answer. Available workers:
 - read_paper(target=<open paper id>, query=<what to find in it>): finds passages in the full text.
+- read_figures(target=<open paper id>, query=<what to look for>): a vision model looks at the paper's
+  figures, tables, plots, diagrams and flowcharts (text extraction cannot see them).
 - search_literature(query=<2-6 word search phrase>): finds other relevant papers.
 - topic_trend(query=<research topic>): publication trend of a topic (growing, peaked, ...).
 
@@ -61,6 +66,9 @@ Rules:
 - If papers are open and the question is about them, read them (one job per paper, max 3).
 - Use search_literature for related work, comparisons, gaps, or when no paper is open.
 - Use topic_trend only when momentum or popularity of a field matters.
+- Use read_figures when the question is about a figure, table, plot, diagram, architecture, pipeline,
+  or the results, or when explaining or critiquing how a method works (max 2 read_figures jobs).
+  read_figures adds to read_paper, it does not replace it: also read the paper's text.
 - If the user highlighted a passage, the question is about it: read that paper with a query built from
   the highlighted text, and search the literature for it when the user wants related, supporting or
   contradicting work.
@@ -127,6 +135,11 @@ def _selection_text(state: CopilotState) -> str:
     sel = state.get("selection")
     if not sel:
         return ""
+    if sel.get("image"):
+        return (
+            f"\nThe user cut out a FIGURE region on page {sel['page']} of {sel['paper_id']} (the answer writer "
+            f'sees the image). Text near it: """{sel["text"][:800]}"""\n'
+        )
     return f'\nThe user highlighted this on page {sel["page"]} of {sel["paper_id"]}:\n"""{sel["text"][:1500]}"""\n'
 
 
@@ -150,9 +163,15 @@ def build_dispatcher(deps: Deps, fulltext=None, documents: dict[str, list[dict]]
         plan = await deps.llm.structured(tier="fast", system=MASTER, prompt=prompt, schema=Dispatch)
         open_ids = {p["id"] for p in state.get("open_papers") or []}
         jobs = []
+        figure_jobs = 0
         for j in plan.jobs[:MAX_JOBS]:
-            if j.kind == "read_paper" and j.target not in open_ids:
+            if j.kind in ("read_paper", "read_figures") and j.target not in open_ids:
                 continue  # the master may only read papers the user has open
+            if j.kind == "read_figures":
+                sel = state.get("selection") or {}
+                if j.target in docs or figure_jobs >= 2 or (sel.get("image") and sel.get("paper_id") == j.target):
+                    continue  # uploaded PDFs stay in the browser; the user can cut out a figure instead
+                figure_jobs += 1
             jobs.append(j.model_dump())
         if not jobs:  # always gather something
             jobs = [{"kind": "search_literature", "target": "", "query": state["message"][:120]}]
@@ -163,9 +182,10 @@ def build_dispatcher(deps: Deps, fulltext=None, documents: dict[str, list[dict]]
 
     async def worker(state: CopilotState):
         job = state["job"]
+        titles = {p["id"]: p["title"] for p in state.get("open_papers") or []}
         async with sem:
             try:
-                ev = await _run_job(job, deps, ft, docs)
+                ev = await _run_job(job, deps, ft, docs, titles)
                 status, note = "done", f"{len(ev)} items"
             except Exception as e:  # one failed worker must not sink the answer
                 ev, status, note = [], "failed", type(e).__name__
@@ -180,8 +200,15 @@ def build_dispatcher(deps: Deps, fulltext=None, documents: dict[str, list[dict]]
     return g.compile()
 
 
-async def _run_job(job: dict, deps: Deps, ft, docs: dict[str, list[dict]] | None = None) -> list[dict]:
+async def _run_job(
+    job: dict, deps: Deps, ft, docs: dict[str, list[dict]] | None = None, titles: dict[str, str] | None = None
+) -> list[dict]:
     kind, q = job["kind"], job["query"]
+    if kind == "read_figures":
+        from .figures import read_pdf_figures
+
+        pid = job["target"]
+        return await read_pdf_figures(deps, ft, pid, (titles or {}).get(pid, pid), q, limit=3)
     if kind == "read_paper":
         pid = job["target"]
         if docs and pid in docs:  # a PDF the user brought: rank its passages here, nothing is stored
@@ -253,6 +280,9 @@ def selection_evidence(sel: dict | None, titles: dict[str, str]) -> list[dict]:
     if not sel:
         return []
     pid = sel["paper_id"]
+    text = sel["text"][:3000]
+    if sel.get("image"):
+        text = f"[a figure region the user cut out; the image is attached] Text near it: {text}"
     return [
         {
             "id": f"H:{pid}:{sel['page']}",
@@ -260,7 +290,8 @@ def selection_evidence(sel: dict | None, titles: dict[str, str]) -> list[dict]:
             "paper_id": pid,
             "title": titles.get(pid, pid),
             "page": sel["page"],
-            "text": sel["text"][:3000],
+            "text": text,
+            "figure": bool(sel.get("image")),
         }
     ]
 
@@ -270,6 +301,11 @@ def ledger_text(evidence: list[dict]) -> str:
     for e in evidence:
         if e["kind"] == "highlight":
             lines.append(f'[{e["id"]}] passage the USER HIGHLIGHTED, page {e["page"]} of "{e["title"]}": {e["text"]}')
+        elif e["kind"] == "figure":
+            lines.append(
+                f"[{e['id']}] AI reading of a figure (vision model, not quoted text), page {e['page']} of "
+                f'"{e["title"]}": {e["text"]}'
+            )
         elif e["kind"] == "passage":
             lines.append(f'[{e["id"]}] passage, page {e["page"]} of "{e["title"]}": {e["text"]}')
         elif e["kind"] == "paper":
@@ -293,7 +329,7 @@ def dedupe_evidence(evidence: list[dict]) -> list[dict]:
     return out
 
 
-_CITE = re.compile(r"\[((?:[SPMCH]):[^\]\s]+)\]")
+_CITE = re.compile(r"\[((?:[SPMCHF]):[^\]\s]+)\]")
 
 
 def verify_answer(answer: str, evidence: list[dict]) -> dict:
@@ -314,9 +350,22 @@ def verify_answer(answer: str, evidence: list[dict]) -> dict:
     }
 
 
-async def write_answer(llm: LLM, *, message: str, mode: str, history: str, evidence: list[dict]):
+async def write_answer(
+    llm: LLM, *, message: str, mode: str, history: str, evidence: list[dict], image: str | None = None
+):
     system = WRITER.format(mode_rule=MODE_RULES.get(mode, MODE_RULES["ask"]))
-    if any(e["kind"] == "highlight" for e in evidence):
+    if any(e["kind"] == "figure" for e in evidence):
+        system += (
+            "\nF: ids are a vision model's reading of the paper's figures. Cite them for what figures show, "
+            "and say 'Figure N shows' rather than presenting them as the authors' words."
+        )
+    if image:
+        system += (
+            "\nThe user cut out a figure from the paper; it is attached as an image (ledger id starts with H:). "
+            "Read it carefully: axes, labels, values, components and arrows. Describe only what is visible, "
+            "cite it with its H: id, and use the other evidence to explain what it means."
+        )
+    elif any(e["kind"] == "highlight" for e in evidence):
         system += (
             "\nThe user highlighted a passage (its id starts with H:). Focus on it and cite it when you discuss it."
         )
@@ -324,5 +373,6 @@ async def write_answer(llm: LLM, *, message: str, mode: str, history: str, evide
         f"Evidence ledger:\n{ledger_text(evidence) or '(empty: say that no evidence was found)'}\n\n"
         f"Recent conversation:\n{history or '(none)'}\n\nUser: {message}"
     )
-    async for chunk in llm.stream_text(tier="strong", system=system, prompt=prompt):
+    kw = {"media": [Media("image/jpeg", image)]} if image else {}
+    async for chunk in llm.stream_text(tier="strong", system=system, prompt=prompt, **kw):
         yield chunk

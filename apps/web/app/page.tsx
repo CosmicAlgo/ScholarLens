@@ -1,26 +1,23 @@
 import Link from "next/link";
-import { TopicSearch } from "@/components/topic-search";
-import { topicSlug } from "@/lib/api";
 
-const EXAMPLES = [
-  "retrieval augmented generation",
-  "diffusion models",
-  "CRISPR base editing",
-  "microplastics",
-  "long covid",
-  "perovskite solar cells",
-  "federated learning",
-  "blockchain",
+const FEATURES: [string, string, string][] = [
+  ["Read with an agent beside you", "Open any open-access paper or your own PDF. Select a passage to ask, explain, verify or find related work.", "▤"],
+  ["It sees the figures", "A vision model reads plots, tables, flowcharts and architecture diagrams, which text extraction misses. Cut out any figure and ask about it.", "◩"],
+  ["Map the connections", "See how your papers link: shared foundations they all cite, key references, and the work that built on them. Your ideas sit on the same map.", "⌘"],
+  ["Evidence matrix", "Problem, method, data, findings and limits for every open paper in one table. Each cell links to the page it came from. Export to CSV.", "▦"],
+  ["Ideas, checked for novelty", "Brainstormed ideas start from cited limitations, then a second agent searches 250M+ works for anything that already did them.", "✦"],
+  ["Verify a claim", "Paste or highlight a claim. Get supported, contradicted or mixed, with the evidence on each side and how strong it is.", "✓"],
 ];
 
-const AGENTS = [
-  ["Planner", "Turns your question into searchable topics"],
-  ["Trend Analyst", "Explains numbers computed in code"],
-  ["Scout", "Finds the papers that matter"],
-  ["Cartographer", "Maps sub-areas and spots emerging ones"],
-  ["Trust Auditor", "Flags retracted and unreviewed work"],
-  ["Writer", "Drafts a briefing from evidence only"],
-  ["Verifier", "Deletes any claim without a real source"],
+const AGENTS: [string, string][] = [
+  ["Master", "plans which workers to send"],
+  ["read_paper", "finds passages, with pages"],
+  ["read_figures", "vision on figures and tables"],
+  ["search_literature", "searches 250M+ works"],
+  ["topic_trend", "computes a field's momentum"],
+  ["Writer", "answers only from evidence"],
+  ["Verifier", "checks every citation in code"],
+  ["Novelty", "tests ideas against prior work"],
 ];
 
 export default function Home() {
@@ -32,88 +29,69 @@ export default function Home() {
           Read, question and build on research, <span className="text-accent">with every claim traced to a page.</span>
         </h1>
         <p className="mt-5 text-lg text-ink-2 max-w-2xl">
-          Open papers side by side, see where a field is really heading, and work with an AI copilot that dispatches
-          agents to read the papers and search 250M+ works, then answers with citations you can click straight to the
-          source page.
+          A team of AI agents reads your papers with you, text and figures alike, searches the literature, and answers
+          with citations that open the exact page. Nothing is stated without a source you can check.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
-          <Link
-            href="/workspace"
-            className="rounded-xl bg-accent text-white font-medium px-5 h-12 inline-flex items-center hover:opacity-90"
-          >
+          <Link href="/workspace" className="rounded-xl bg-accent text-white font-medium px-5 h-12 inline-flex items-center hover:opacity-90">
             Open the workspace →
           </Link>
           <Link
-            href="/about"
+            href="/trends"
             className="rounded-xl border border-line bg-surface font-medium px-5 h-12 inline-flex items-center hover:border-ink-3"
           >
-            How it stays trustworthy
+            Explore research trends
           </Link>
         </div>
-        <p className="mt-10 text-sm text-ink-3">Or check a field&rsquo;s momentum:</p>
-        <div className="mt-2 max-w-2xl">
-          <TopicSearch />
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {EXAMPLES.map((t) => (
-            <Link
-              key={t}
-              href={`/topic/${topicSlug(t)}`}
-              className="text-sm rounded-full border border-line bg-surface px-3 py-1 text-ink-2 hover:border-ink-3 hover:text-ink"
-            >
-              {t}
-            </Link>
-          ))}
-        </div>
+        <p className="mt-4 text-sm text-ink-3">No account needed. Your own PDFs stay in your browser.</p>
       </section>
 
-      <section className="grid md:grid-cols-3 gap-4 pb-16">
-        <Feature title="Honest trends" href="/about#trends">
-          Most tools show raw paper counts, which rise for almost everything because science grows ~4–5% a year. We
-          measure a topic&rsquo;s <strong>share</strong> of all papers, so you see real momentum, peaks and declines.
-        </Feature>
-        <Feature title="Compare fields" href="/compare">
-          Put up to four topics side by side on one scale. Is your field gaining on its neighbour, or losing ground?
-        </Feature>
-        <Feature title="Trust badges" href="/about#trust">
-          Retracted papers and unreviewed preprints are flagged wherever they appear, including inside AI reports.
-        </Feature>
-      </section>
-
-      <section className="pb-20">
-        <div className="rounded-2xl border border-line bg-surface p-6 md:p-8">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight">Ask a question, get a cited briefing</h2>
-              <p className="mt-2 text-ink-2 max-w-2xl">
-                Seven agents, each with one job. Numbers are computed in code, never written by the model. You see
-                exactly which claims the verifier removed.
-              </p>
+      <section className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 pb-16">
+        {FEATURES.map(([title, body, icon]) => (
+          <div key={title} className="rounded-2xl border border-line bg-surface p-5">
+            <div className="w-9 h-9 rounded-xl bg-accent-soft text-accent-ink grid place-items-center text-lg" aria-hidden="true">
+              {icon}
             </div>
-            <Link href="/ask" className="rounded-xl bg-ink text-bg px-4 h-11 inline-flex items-center font-medium hover:opacity-90">
-              Try Ask →
-            </Link>
+            <h2 className="mt-3 font-semibold">{title}</h2>
+            <p className="mt-1.5 text-sm text-ink-2 leading-relaxed">{body}</p>
           </div>
-          <ol className="mt-6 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        ))}
+      </section>
+
+      <section className="pb-16">
+        <div className="rounded-2xl border border-line bg-surface p-6 md:p-8">
+          <h2 className="text-2xl font-semibold tracking-tight">How a question gets answered</h2>
+          <p className="mt-2 text-ink-2 max-w-2xl">
+            A master agent plans the work and sends specialist workers in parallel. Numbers are computed in code, figure
+            readings are labelled as such, and the verifier flags any citation that isn&rsquo;t in the evidence.
+          </p>
+          <ol className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
             {AGENTS.map(([name, job], i) => (
               <li key={name} className="rounded-xl bg-surface-2 p-3">
                 <div className="text-xs text-ink-3 font-mono">{String(i + 1).padStart(2, "0")}</div>
-                <div className="font-medium">{name}</div>
+                <div className="font-medium font-mono text-sm break-all">{name}</div>
                 <div className="text-sm text-ink-2">{job}</div>
               </li>
             ))}
           </ol>
         </div>
       </section>
-    </div>
-  );
-}
 
-function Feature({ title, href, children }: { title: string; href: string; children: React.ReactNode }) {
-  return (
-    <Link href={href} className="block rounded-2xl border border-line bg-surface p-5 hover:border-ink-3">
-      <h2 className="font-semibold">{title}</h2>
-      <p className="mt-2 text-sm text-ink-2 leading-relaxed">{children}</p>
-    </Link>
+      <section className="grid md:grid-cols-2 gap-4 pb-20">
+        <Link href="/trends" className="block rounded-2xl border border-line bg-surface p-6 hover:border-ink-3">
+          <h2 className="font-semibold text-lg">Trends →</h2>
+          <p className="mt-2 text-sm text-ink-2 leading-relaxed">
+            Is your field really growing? We measure its share of all papers, not raw counts, so real peaks and declines
+            show.
+          </p>
+        </Link>
+        <Link href="/ask" className="block rounded-2xl border border-line bg-surface p-6 hover:border-ink-3">
+          <h2 className="font-semibold text-lg">Briefings →</h2>
+          <p className="mt-2 text-sm text-ink-2 leading-relaxed">
+            Ask a question about a field and get a cited report: momentum, key papers, emerging sub-areas and trust flags.
+          </p>
+        </Link>
+      </section>
+    </div>
   );
 }

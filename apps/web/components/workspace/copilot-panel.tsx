@@ -97,9 +97,9 @@ export function CopilotPanel({
         {messages.length === 0 && (
           <div className="space-y-2">
             <p className="text-sm text-ink-3">
-              A master agent plans the work and dispatches workers in parallel: one reads your open papers, one searches the
-              literature, one checks topic trends. Every claim cites a page or a paper, and a checker verifies the citations.
-              Select text in a PDF to ask about it.
+              A master agent plans the work and dispatches workers in parallel: one reads your open papers, one looks at their
+              figures, one searches the literature, one checks topic trends. Every claim cites a page or a paper, and a checker
+              verifies the citations. Select text in a PDF, or cut out a figure, to ask about it.
             </p>
             {starters(papers).map((s) => (
               <button
@@ -126,11 +126,17 @@ export function CopilotPanel({
                 {m.mode !== "ask" && (
                   <span className="block text-[0.65rem] uppercase tracking-wider opacity-80">{MODES.find((x) => x.id === m.mode)?.label}</span>
                 )}
-                {m.selection && (
+                {m.selection?.image && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`data:image/jpeg;base64,${m.selection.image}`} alt={`Figure cut from page ${m.selection.page}`} className="mb-1.5 max-h-40 rounded-lg bg-white" />
+                )}
+                {m.selection && (m.selection.image || m.selection.figure) ? (
+                  <span className="block mb-1 text-xs opacity-90">Figure from p.{m.selection.page}</span>
+                ) : m.selection ? (
                   <span className="block mb-1 border-l-2 border-white/60 pl-2 text-xs opacity-90 line-clamp-3">
                     “{m.selection.text}” <span className="opacity-80">p.{m.selection.page}</span>
                   </span>
-                )}
+                ) : null}
                 {m.text}
               </div>
             </div>
@@ -177,11 +183,19 @@ export function CopilotPanel({
         </div>
         {pending && (
           <div className="flex items-start gap-2 rounded-xl border border-accent/40 bg-accent-soft px-3 py-2 text-xs">
+            {pending.image && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={`data:image/jpeg;base64,${pending.image}`} alt="" className="w-16 h-12 object-contain rounded bg-white shrink-0" />
+            )}
             <div className="min-w-0 flex-1">
               <div className="text-[0.65rem] font-semibold uppercase tracking-wider text-accent-ink">
-                Selected · p.{pending.page} · {pending.title}
+                {pending.image ? "Figure" : "Selected"} · p.{pending.page} · {pending.title}
               </div>
-              <p className="text-ink-2 line-clamp-2">“{pending.text}”</p>
+              {pending.image ? (
+                <p className="text-ink-2">Copilot will look at this figure.</p>
+              ) : (
+                <p className="text-ink-2 line-clamp-2">“{pending.text}”</p>
+              )}
             </div>
             <button type="button" aria-label="Remove selection" onClick={onClearPending} className="text-ink-3 hover:text-ink">
               ×
@@ -206,7 +220,7 @@ export function CopilotPanel({
             rows={2}
             maxLength={2000}
             placeholder={
-              pending ? "Ask about the selected text…" : mode === "verify" ? "Paste a claim to check…" : papers.length ? "Ask about the open papers…" : "Ask about a research topic…"
+              pending?.image ? "Ask about this figure…" : pending ? "Ask about the selected text…" : mode === "verify" ? "Paste a claim to check…" : papers.length ? "Ask about the open papers…" : "Ask about a research topic…"
             }
             className="flex-1 resize-none rounded-xl border border-line bg-bg px-3 py-2 text-base sm:text-sm outline-none focus:border-accent"
           />

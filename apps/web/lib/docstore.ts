@@ -80,3 +80,53 @@ export async function readPdf(data: ArrayBuffer, fallbackTitle: string) {
   await task.destroy();
   return { title, pages: numPages, passages: splitPassages(pages) };
 }
+
+const CAPTION = /\b(fig\.?|figure|table)\s*\d+/i;
+
+/** Pages of an uploaded PDF that mention a figure or table caption (first `limit`). */
+export function figurePages(passages: DocPassage[], limit = 6): number[] {
+  const pages: number[] = [];
+  for (const p of passages) if (CAPTION.test(p.text) && !pages.includes(p.page)) pages.push(p.page);
+  return pages.slice(0, limit);
+}
+
+/** Render pages to JPEG in the browser (for figure reading on PDFs that never leave this device). */
+export async function renderPages(data: ArrayBuffer, pages: number[], width = 1240): Promise<{ page: number; data: string }[]> {
+  const { pdfjs } = await import("./pdfjs");
+  const task = pdfjs.getDocument({ data: new Uint8Array(data.slice(0)) });
+  const pdf = await task.promise;
+  const out: { page: number; data: string }[] = [];
+  try {
+    for (const n of pages) {
+      if (n < 1 || n > pdf.numPages) continue;
+      const page = await pdf.getPage(n);
+      const vp1 = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: width / vp1.width });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      out.push({ page: n, data: canvas.toDataURL("image/jpeg", 0.82).split(",")[1] });
+    }
+  } finally {
+    await task.destroy();
+  }
+  return out;
+}
+
+/** Crop a region (fractions of the page) out of a rendered page canvas, as base64 JPEG. */
+export function cropCanvas(canvas: HTMLCanvasElement, r: { x: number; y: number; w: number; h: number }, max = 1600): string {
+  const sx = r.x * canvas.width, sy = r.y * canvas.height, sw = r.w * canvas.width, sh = r.h * canvas.height;
+  const scale = Math.min(1, max / Math.max(sw, sh));
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(sw * scale));
+  out.height = Math.max(1, Math.round(sh * scale));
+  const ctx = out.getContext("2d")!;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+  return out.toDataURL("image/jpeg", 0.85).split(",")[1];
+}

@@ -7,7 +7,7 @@ import { Wordmark } from "./brand";
 
 const NAV = [
   { href: "/workspace", label: "Workspace", hint: "Read, highlight and ask" },
-  { href: "/", label: "Trends", hint: "Where a field is heading" },
+  { href: "/trends", label: "Trends", hint: "Where a field is heading" },
   { href: "/compare", label: "Compare", hint: "Topics side by side" },
   { href: "/ask", label: "Briefings", hint: "A cited report on a question" },
   { href: "/about", label: "How it works", hint: "Method, trust and privacy" },
@@ -27,7 +27,7 @@ export function HeaderShell({ path }: { path: string }) {
     return () => window.removeEventListener("keydown", esc);
   }, [open]);
 
-  const active = (href: string) => (href === "/" ? path === "/" || path.startsWith("/topic") : path.startsWith(href));
+  const active = (href: string) => (href === "/trends" ? path.startsWith("/trends") || path.startsWith("/topic") : path.startsWith(href));
   const inWorkspace = path.startsWith("/workspace");
 
   return (
