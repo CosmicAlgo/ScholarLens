@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     copilot_per_client_per_day: int = 40
     copilot_global_per_day: int = 600
 
+    # Abuse guardrails (per IP; see guard.py). AI_PAUSED=true switches every AI feature off.
+    ai_paused: bool = False
+    ai_calls_per_ip_per_day: int = 80
+    requests_per_ip_per_minute: int = 120
+    smart_searches_per_ip_per_day: int = 300
+
     cors_origins: list[str] = ["http://localhost:3000"]
 
 

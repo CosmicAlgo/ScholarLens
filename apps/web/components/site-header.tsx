@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import "@/lib/copilot-run"; // answers keep streaming (and resume) on every page
+import { isAnswering, useWorkspace } from "@/lib/store";
 import { Wordmark } from "./brand";
 
 const NAV = [
@@ -29,10 +31,11 @@ export function HeaderShell({ path }: { path: string }) {
 
   const active = (href: string) => (href === "/trends" ? path.startsWith("/trends") || path.startsWith("/topic") : path.startsWith(href));
   const inWorkspace = path.startsWith("/workspace");
+  const answering = isAnswering(useWorkspace());
 
   return (
     <header className="sticky top-0 z-30 h-14 border-b border-line bg-surface/85 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
-      <div className={`mx-auto h-full flex items-center gap-3 px-4 ${inWorkspace ? "max-w-none" : "max-w-6xl"}`}>
+      <div className="h-full flex items-center gap-3 px-4">
         <Link href="/" aria-label="ScholarLens home" className="shrink-0">
           <Wordmark />
         </Link>
@@ -56,6 +59,17 @@ export function HeaderShell({ path }: { path: string }) {
         </nav>
 
         <span className="flex-1" />
+        {!inWorkspace && answering && (
+          <Link
+            href="/workspace"
+            className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-3 h-8 text-xs font-medium text-accent-ink"
+            title="Copilot is still writing your answer. It keeps going while you browse."
+          >
+            <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
+            <span className="hidden sm:inline">Copilot is answering</span>
+            <span className="sm:hidden">Answering</span>
+          </Link>
+        )}
         {!inWorkspace && (
           <Link
             href="/workspace"

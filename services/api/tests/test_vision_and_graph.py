@@ -115,7 +115,7 @@ class EchoLLM:
     def __init__(self):
         self.media, self.system = None, ""
 
-    async def stream_text(self, *, tier, system, prompt, media=None):
+    async def stream_text(self, *, tier, system, prompt, media=None, **kw):
         self.media, self.system = media, system
         yield "ok"
 

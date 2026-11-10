@@ -14,6 +14,8 @@ export type OpenPaper = Pick<
   pages?: number | null;
   /** The user supplied the PDF (an upload, or attached to a paywalled paper). Lives in IndexedDB. */
   local?: boolean;
+  /** When the local PDF was last (re)attached, so open views reload it. */
+  localAt?: number;
 };
 
 export type Job = { kind: "read_paper" | "read_figures" | "search_literature" | "topic_trend"; target: string; query: string };
@@ -80,6 +82,8 @@ export type Message =
       evidence: EvidenceItem[];
       verification?: Verification;
       novelty?: NoveltyItem[] | "pending";
+      /** Server run id, so the answer can resume after a reload or a dropped connection. */
+      runId?: string;
       error?: string;
       done: boolean;
       at: number;
@@ -107,7 +111,7 @@ export const MATRIX_COLUMNS = [
   { key: "limitations", label: "Limitations" },
 ] as const;
 
-export type MatrixCell = { text: string; cites: string[]; unsupported_numbers?: string[] };
+export type MatrixCell = { text: string; cites: string[]; unsupported_numbers?: string[]; uncited?: boolean };
 export type MatrixRow = {
   paper_id: string;
   source: "full_text" | "uploaded" | "abstract";
@@ -138,7 +142,7 @@ export function loadState(): WorkspaceState {
     const s = JSON.parse(raw) as WorkspaceState;
     // Never restore a half-streamed answer.
     s.messages = (s.messages || []).map((m) =>
-      m.role === "assistant" && !m.done
+      m.role === "assistant" && !m.done && !m.runId
         ? { ...m, done: true, error: m.error || "Interrupted." }
         : m.role === "assistant" && m.novelty === "pending"
           ? { ...m, novelty: [] }
@@ -229,46 +233,88 @@ export type CopilotBody = {
   selection: Selection | null;
 };
 
-export async function askCopilot(body: CopilotBody, h: Handlers, signal: AbortSignal) {
-  const res = await fetch(`${API_URL}/api/copilot`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok || !res.body) throw new Error(await errorText(res, "Copilot is unavailable right now."));
+/** Where a Copilot stream got to: the server's run id and the last event index received. */
+export type RunCursor = { runId?: string; last: number };
+
+class AnswerError extends Error {}
+
+async function consume(res: Response, h: Handlers, cur: RunCursor, onRun: (id: string) => void) {
+  if (!res.ok || !res.body) throw new AnswerError(await errorText(res, "Copilot is unavailable right now."));
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  let finished = false;
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) return;
     buf += dec.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
     let i;
     while ((i = buf.indexOf("\n\n")) >= 0) {
       const chunk = buf.slice(0, i);
       buf = buf.slice(i + 2);
       let event = "message";
+      let id: number | null = null;
       const lines: string[] = [];
       for (const line of chunk.split("\n")) {
         if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("id:")) id = Number(line.slice(3).trim());
         else if (line.startsWith("data:")) lines.push(line.slice(5).replace(/^ /, ""));
       }
       if (!lines.length) continue;
       const d = JSON.parse(lines.join("\n"));
+      if (event === "run") {
+        cur.runId = d.id;
+        onRun(d.id);
+        continue;
+      }
+      if (id !== null) {
+        if (id <= cur.last) continue; // already applied before a reconnect
+        cur.last = id;
+      }
       if (event === "dispatch") h.onDispatch(d.jobs);
       else if (event === "job") h.onJob(d.job, d.status, d.note);
       else if (event === "evidence") h.onEvidence(d);
       else if (event === "token") h.onToken(d.text);
-      else if (event === "verified") {
-        h.onVerified(d);
-        finished = true;
-      } else if (event === "novelty") h.onNovelty(d);
-      else if (event === "error") throw new Error(d.message || "Copilot failed.");
+      else if (event === "verified") h.onVerified(d);
+      else if (event === "novelty") h.onNovelty(d);
+      else if (event === "error") throw new AnswerError(d.message || "Copilot failed.");
     }
   }
-  if (!finished) throw new Error("The connection closed before the answer finished.");
+}
+
+/**
+ * Ask Copilot, or resume a run (`cur.runId` set). The server keeps producing the answer even if this
+ * connection drops, so network errors reconnect and continue from the last event received.
+ */
+export async function askCopilot(
+  body: CopilotBody | null,
+  h: Handlers,
+  signal: AbortSignal,
+  cur: RunCursor,
+  onRun: (id: string) => void,
+) {
+  const headers = { "Content-Type": "application/json", "X-Client-Id": clientId() };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res =
+        cur.runId || !body
+          ? await fetch(`${API_URL}/api/copilot/${cur.runId}/stream?after=${cur.last + 1}`, { headers, signal })
+          : await fetch(`${API_URL}/api/copilot`, { method: "POST", headers, body: JSON.stringify(body), signal });
+      if (res.status === 404 && cur.runId) throw new AnswerError("This answer is no longer available on the server.");
+      await consume(res, h, cur, onRun);
+      return;
+    } catch (e) {
+      if (signal.aborted || e instanceof AnswerError) throw e;
+      // A dropped connection: reconnect if the server had already started this run.
+      if (!cur.runId || attempt >= 6) throw new Error("The connection dropped. Check your network and ask again.");
+      await new Promise((r) => setTimeout(r, Math.min(8000, 800 * 2 ** attempt)));
+    }
+  }
+}
+
+export async function cancelRun(runId: string) {
+  try {
+    await fetch(`${API_URL}/api/copilot/${runId}/cancel`, { method: "POST", headers: { "X-Client-Id": clientId() } });
+  } catch {}
 }
 
 export const JOB_LABEL: Record<Job["kind"], string> = {

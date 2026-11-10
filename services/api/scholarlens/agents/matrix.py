@@ -39,6 +39,23 @@ Be concrete: name the method, the dataset and sizes, the headline numbers. If th
 write "Not reported". Cite the passage ids each cell is based on."""
 
 
+def normalise_cites(raw: list[str], seen: set[str]) -> list[str]:
+    """Map what the model wrote ("[S:U12ab:3]", "S:U12ab:3 ", "3", "passage 3") onto real passage ids.
+    Anything that cannot be matched to a passage that was shown is dropped."""
+    out: list[str] = []
+    for c in raw:
+        c = c.strip().strip("[]() ").strip()
+        hit = c if c in seen else None
+        if hit is None:
+            m = re.search(r"(\d+)$", c)
+            if m:
+                ends = [s for s in seen if s.endswith(":" + m.group(1))]
+                hit = ends[0] if len(ends) == 1 else None
+        if hit and hit not in out:
+            out.append(hit)
+    return out
+
+
 async def extract_row(deps: Deps, ft, paper_id: str, title: str, passages: list[dict] | None = None) -> dict:
     evidence: list[dict] = []
     if passages:
@@ -90,12 +107,13 @@ async def extract_row(deps: Deps, ft, paper_id: str, title: str, passages: list[
     cells = {}
     for col in COLUMNS:
         cell: Cell = getattr(row, col)
-        cites = [c for c in cell.cites if c in seen]
+        cites = normalise_cites(cell.cites, seen)
         # Same number check as Copilot answers: a figure in a cell must appear in a passage it cites.
         tag = "".join(f" [{c}]" for c in cites)
         tagged = re.sub(r"([.!?])(\s+)", tag + r"\1\2", cell.text.strip()) + tag if cites else ""
         flagged = sorted({x["number"] for x in unsupported_numbers(tagged, by_id)}) if tagged else []
-        cells[col] = {"text": cell.text, "cites": cites, "unsupported_numbers": flagged}
+        uncited = not cites and not cell.text.strip().lower().startswith("not reported")
+        cells[col] = {"text": cell.text, "cites": cites, "unsupported_numbers": flagged, "uncited": uncited}
     used = {c for cell in cells.values() for c in cell["cites"]}
     return {
         "paper_id": paper_id,

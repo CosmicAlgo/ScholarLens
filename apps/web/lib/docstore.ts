@@ -140,3 +140,15 @@ export function cropCanvas(canvas: HTMLCanvasElement, r: { x: number; y: number;
   ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
   return out.toDataURL("image/jpeg", 0.85).split(",")[1];
 }
+
+export const allDocs = () => tx<StoredDoc[]>("readonly", (s) => s.getAll()).catch(() => [] as StoredDoc[]);
+
+/** Ask the browser not to evict our storage. Returns whether storage is now persistent. */
+export async function keepStorage(): Promise<boolean> {
+  try {
+    if (await navigator.storage?.persisted?.()) return true;
+    return (await navigator.storage?.persist?.()) ?? false;
+  } catch {
+    return false;
+  }
+}

@@ -4,6 +4,7 @@ Free, deterministic endpoints (no LLM cost): /api/trend, /api/compare, /api/sear
 Agent endpoint (LLM cost, rate-limited): POST /api/runs, streamed as Server-Sent Events.
 """
 
+import asyncio
 import base64
 import binascii
 import json
@@ -13,19 +14,20 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import citegraph, fulltext, lineage, openalex, smart_search
+from . import citegraph, fulltext, lineage, openalex, runs, smart_search, trending
 from .agents import copilot, figures, matrix, novelty
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
 from .agents.llm import AgentError, make_llm
 from .config import get_settings
 from .db import close_pool, open_pool, pool
+from .guard import GuardMiddleware, allow_smart_search
 from .search import get_paper, search_with_coverage
 
 log = logging.getLogger("scholarlens")
@@ -39,6 +41,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ScholarLens API", version="0.2.0", lifespan=lifespan)
+app.add_middleware(GuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -84,6 +87,7 @@ async def compare(q: list[str] = Query(..., max_length=4), year_from: int | None
 
 @app.get("/api/search")
 async def search(
+    request: Request,
     q: str = Query(..., min_length=2, max_length=200),
     year_from: int | None = None,
     year_to: int | None = None,
@@ -92,11 +96,22 @@ async def search(
 ):
     """`smart=true`: tolerate typos and vague wording (an LLM may rewrite the query; results are
     always real catalogue papers, and the rewrite is returned so the UI can show it)."""
-    if smart:
+    if smart and allow_smart_search(request):
         out = await smart_search.smart_search(make_llm(get_settings()), q, limit, year_from, year_to)
         return {"query": q, "interpreted": out["interpreted"], "results": [h.public() for h in out["results"]]}
     hits = await search_with_coverage(q, limit=limit, year_from=year_from, year_to=year_to)
     return {"query": q, "interpreted": None, "results": [h.public() for h in hits]}
+
+
+@app.get("/api/trending")
+async def trending_topics(response: Response):
+    """Fastest-growing research topics (last 12 months vs the 12 before), refreshed every 6 hours."""
+    try:
+        out = await trending.trending()
+    except openalex.OpenAlexError as e:
+        raise HTTPException(502, "OpenAlex is unavailable right now.") from e
+    response.headers["Cache-Control"] = "public, max-age=1800"
+    return out
 
 
 @app.get("/api/papers/{paper_id}")
@@ -232,7 +247,7 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
     deps = Deps(llm=llm, tools=LiveTools())
     graph = copilot.build_dispatcher(deps, documents=docs)
 
-    async def stream():
+    async def produce(run: runs.Run):
         status, error, answer, evidence = "done", None, "", []
         try:
             state = {
@@ -249,32 +264,36 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
             async for update in graph.astream(state, stream_mode="updates"):
                 for delta in update.values():
                     for ev in (delta or {}).get("events", []):
-                        yield {"event": ev["type"], "data": json.dumps(ev)}
+                        run.push(ev["type"], json.dumps(ev))
                     evidence.extend((delta or {}).get("evidence", []))
             evidence = copilot.dedupe_evidence(evidence)
-            yield {"event": "evidence", "data": json.dumps(evidence, default=str)}
+            run.push("evidence", json.dumps(evidence, default=str))
             image = body.selection.image if body.selection else None
             async for chunk in copilot.write_answer(
                 llm, message=body.message, mode=body.mode, history=history, evidence=evidence, image=image
             ):
                 answer += chunk
-                yield {"event": "token", "data": json.dumps({"text": chunk})}
-            yield {"event": "verified", "data": json.dumps(copilot.verify_answer(answer, evidence))}
+                run.push("token", json.dumps({"text": chunk}))
+            run.push("verified", json.dumps(copilot.verify_answer(answer, evidence)))
             if body.mode == "brainstorm" and answer:
                 try:
                     checked = await novelty.check_ideas(deps, answer)
-                    yield {"event": "novelty", "data": json.dumps(checked)}
+                    run.push("novelty", json.dumps(checked))
                 except Exception as e:  # the answer is already delivered; the check is a bonus
                     log.warning("novelty check failed for %s: %r", run_id, e)
-                    yield {"event": "novelty", "data": json.dumps([])}
+                    run.push("novelty", json.dumps([]))
+        except asyncio.CancelledError:
+            status, error = "cancelled", "stopped by the user"
+            run.push("error", json.dumps({"message": "Stopped."}))
+            raise
         except AgentError as e:
             log.warning("copilot %s failed: %s (cause: %r)", run_id, e, e.__cause__)
             status, error = "failed", f"{e} ({e.__cause__!r})"[:500]
-            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+            run.push("error", json.dumps({"message": str(e)}))
         except Exception as e:  # never leak internals to the client
             log.exception("copilot %s failed", run_id)
             status, error = "failed", repr(e)[:500]
-            yield {"event": "error", "data": json.dumps({"message": "Something went wrong answering this."})}
+            run.push("error", json.dumps({"message": "Something went wrong answering this."}))
         finally:
             async with pool().connection() as conn:
                 await conn.execute(
@@ -290,7 +309,31 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
                     ),
                 )
 
-    return EventSourceResponse(stream())
+    run = runs.start(x_client_id, produce)
+    return EventSourceResponse(_replay(run, 0))
+
+
+async def _replay(run: "runs.Run", start: int):
+    """The run's events from `start`. The first event tells the browser the run id, so it can reconnect."""
+    yield {"event": "run", "data": json.dumps({"id": run.id})}
+    async for ev in run.follow(start):
+        yield ev
+
+
+@app.get("/api/copilot/{run_id}/stream")
+async def copilot_resume(
+    run_id: str, after: int = Query(0, ge=0), x_client_id: str = Header(default="anonymous", max_length=64)
+):
+    """Reconnect to a running (or recently finished) answer and receive events from index `after`."""
+    run = runs.get(run_id, x_client_id)
+    if run is None:
+        raise HTTPException(404, "This answer is no longer available.")
+    return EventSourceResponse(_replay(run, after))
+
+
+@app.post("/api/copilot/{run_id}/cancel")
+async def copilot_cancel(run_id: str, x_client_id: str = Header(default="anonymous", max_length=64)):
+    return {"cancelled": runs.cancel(run_id, x_client_id)}
 
 
 class ExtractRequest(BaseModel):

@@ -1,6 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { fetchTrending } from "../trending-now";
+import { exportWorkspace, importWorkspace } from "@/lib/backup";
 import { ScreenDeck } from "./screen";
 import type { Interpretation, Paper, Trend } from "@/lib/api";
 import { fetchSearch, fetchTrend } from "@/lib/api";
@@ -17,6 +19,7 @@ export function Library({
   onKeep,
   onUnqueue,
   onScreened,
+  notify,
 }: {
   state: WorkspaceState;
   onOpen: (p: Paper) => void;
@@ -26,7 +29,9 @@ export function Library({
   onKeep: (p: Paper) => void;
   onUnqueue: (id: string) => void;
   onScreened: (kept: number, total: number, seconds: number) => void;
+  notify: (text: string, tone: "info" | "bad") => void;
 }) {
+  const restoreInput = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<"search" | "notes">("search");
   const file = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
@@ -39,6 +44,12 @@ export function Library({
   const [screening, setScreening] = useState(false);
   const [err, setErr] = useState("");
   const run = useRef(0);
+  const [suggestions, setSuggestions] = useState(["retrieval augmented generation", "CRISPR base editing", "microplastics", "perovskite stability"]);
+  useEffect(() => {
+    fetchTrending()
+      .then((t) => t.rising.length && setSuggestions(t.rising.slice(0, 6).map((r) => r.name)))
+      .catch(() => {});
+  }, []);
 
   /** Plain results show at once; the smart search (typos, vague wording) replaces them when ready. */
   async function search(e?: React.FormEvent, override?: string, exact = false) {
@@ -184,7 +195,7 @@ export function Library({
           <Section title={`Reading list (${state.queue.length})`}>
             {state.queue.map((p) => (
               <div key={p.id} className="group flex items-start gap-1 px-4 py-1.5 hover:bg-surface-2">
-                <button onClick={() => onOpen(p as Paper)} className="flex-1 text-left text-sm text-ink-2 hover:text-ink line-clamp-2">
+                <button onClick={() => onOpen(p as Paper)} title={p.title} className="flex-1 text-left text-sm text-ink-2 hover:text-ink line-clamp-2">
                   {p.title}
                 </button>
                 <button
@@ -233,9 +244,10 @@ export function Library({
 
         {!results && state.papers.length === 0 && (
           <div className="p-4 text-sm text-ink-3 space-y-3">
-            <p>Search for a topic or paper. Open papers to read them side by side and ask Copilot about them.</p>
+            <p>Search for a topic or paper, even with typos. Open papers to read them side by side and ask Copilot about them.</p>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-wider">Trending now</p>
             <div className="flex flex-wrap gap-1.5">
-              {["retrieval augmented generation", "CRISPR base editing", "microplastics", "perovskite stability"].map((t) => (
+              {suggestions.map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -243,7 +255,8 @@ export function Library({
                     setQ(t);
                     search(undefined, t);
                   }}
-                  className="rounded-full border border-line px-2.5 py-1 text-xs hover:border-ink-3 hover:text-ink"
+                  title={t}
+                  className="max-w-full rounded-full border border-line px-2.5 py-1 text-xs text-left leading-snug hover:border-ink-3 hover:text-ink"
                 >
                   {t}
                 </button>
@@ -253,6 +266,45 @@ export function Library({
         )}
       </div>
       </>
+      )}
+      {tab === "search" && (
+        <div className="shrink-0 border-t border-line px-3 py-2 flex items-center gap-2 text-[0.68rem] text-ink-3">
+          <span className="flex-1 leading-snug">Your workspace and PDFs are saved in this browser only.</span>
+          <button
+            onClick={async () => {
+              const r = await exportWorkspace();
+              notify(`Backup saved: ${r.papers} open papers, ${r.pdfs} of your PDFs, notes and reading list.`, "info");
+            }}
+            className="rounded-md border border-line px-2 h-6 hover:border-accent hover:text-accent-ink"
+            title="Download a backup file with your papers, notes, reading list and your own PDFs"
+          >
+            Back up
+          </button>
+          <button
+            onClick={() => restoreInput.current?.click()}
+            className="rounded-md border border-line px-2 h-6 hover:border-accent hover:text-accent-ink"
+            title="Restore from a backup file. Merges into this workspace; nothing is deleted."
+          >
+            Restore
+          </button>
+          <input
+            ref={restoreInput}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (!f) return;
+              try {
+                const r = await importWorkspace(f);
+                notify(`Restored ${r.papers} papers and ${r.pdfs} PDFs from the backup.`, "info");
+              } catch (err) {
+                notify(err instanceof Error ? err.message : "Could not read that backup.", "bad");
+              }
+            }}
+          />
+        </div>
       )}
       {screening && results && (
         <ScreenDeck
@@ -284,7 +336,7 @@ function Section({ title, children, action }: { title: string; children: React.R
 
 function ResultRow({ p, open, onClick }: { p: Paper; open: boolean; onClick: () => void }) {
   return (
-    <button onClick={onClick} className="group w-full text-left px-4 py-2.5 hover:bg-surface-2 border-l-2 border-transparent hover:border-accent">
+    <button onClick={onClick} title={p.title} className="group w-full text-left px-4 py-2.5 hover:bg-surface-2 border-l-2 border-transparent hover:border-accent">
       <div className="text-sm leading-snug text-ink line-clamp-2 group-hover:text-accent-ink">{p.title}</div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.7rem] text-ink-3">
         <span className="font-mono">{p.year ?? ""}</span>
@@ -323,11 +375,12 @@ function Pulse({ t }: { t: Trend }) {
       </svg>
       <div className="flex justify-between text-[0.68rem] text-ink-3 font-mono">
         <span>{pts[0].year}</span>
-        <span>
-          share {pct(t.recent_growth)}/yr recently · {t.total_papers.toLocaleString("en-GB")} papers
-        </span>
         <span>{pts.at(-1)!.year}</span>
       </div>
+      <p className="mt-1.5 text-xs text-ink-2 leading-snug">
+        Share of all papers: <strong className="text-ink">{pct(t.recent_growth)}</strong> a year recently ·{" "}
+        {t.total_papers.toLocaleString("en-GB")} papers in total
+      </p>
     </div>
   );
 }

@@ -79,8 +79,37 @@ export default function About() {
             personal or confidential information.
           </li>
           <li>
+            PDFs you upload stay in your browser (IndexedDB). They are never stored on our servers. When you ask Copilot,
+            only the passages it needs (and any figure you cut out) are sent to answer that one question.
+          </li>
+          <li>
+            Because your PDFs live in your browser, clearing site data or a long absence can remove them. Use{" "}
+            <strong>Back up</strong> in the Library to save a file with your papers, notes and PDFs, and{" "}
+            <strong>Restore</strong> to load it on any device.
+          </li>
+          <li>
             We use privacy-friendly product analytics (PostHog, EU hosting) to count page views and feature use. No session
             recordings, and we honour Do Not Track.
+          </li>
+        </ul>
+      </section>
+
+      <section id="use">
+        <h2 className="text-xl font-semibold">Fair use and limits</h2>
+        <ul className="mt-2 list-disc pl-5 text-ink-2 space-y-1">
+          <li>ScholarLens is for reading and reasoning about research. Requests outside that, or for harmful help, are declined.</li>
+          <li>
+            Only upload documents you have the right to use. Don&rsquo;t upload confidential, personal or unpublished material
+            you can&rsquo;t share with Google&rsquo;s free AI tier.
+          </li>
+          <li>
+            To keep it free for everyone there are daily limits on AI features, per browser and per network, plus a request
+            rate limit. Reading, search, trends and the citation map are not limited in the same way.
+          </li>
+          <li>Instructions hidden inside papers are treated as text to analyse, never as commands to the assistant.</li>
+          <li>
+            Every AI answer is checked in code: citations must exist, and numbers must appear in the source they cite.
+            Still, check the cited page before you rely on a claim.
           </li>
         </ul>
       </section>

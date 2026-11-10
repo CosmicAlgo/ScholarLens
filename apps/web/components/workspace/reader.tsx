@@ -146,6 +146,7 @@ function PaperView({
   figures: FigureGuideProps;
 }) {
   const [local, setLocal] = useState<ArrayBuffer | null>(null);
+  const [missing, setMissing] = useState(false);
   const [view, setView] = useState<"pdf" | "abstract">("pdf");
   const [guide, setGuide] = useState(false);
   const figs = figures.items[p.id];
@@ -153,11 +154,16 @@ function PaperView({
 
   useEffect(() => {
     let live = true;
-    if (p.local) getDoc(p.id).then((d) => live && setLocal(d?.data ?? null));
+    if (p.local)
+      getDoc(p.id).then((d) => {
+        if (!live) return;
+        setLocal(d?.data ?? null);
+        setMissing(!d);
+      });
     return () => {
       live = false;
     };
-  }, [p.id, p.local]);
+  }, [p.id, p.local, p.localAt]);
 
   // A stable source object: pdf.js takes ownership of the bytes, so it gets its own copy.
   const localSource = useMemo(() => (local ? { data: new Uint8Array(local.slice(0)) } : null), [local]);
@@ -231,6 +237,12 @@ function PaperView({
               </button>
             }
           />
+        ) : p.local && missing ? (
+          <div className="h-full overflow-y-auto">
+            <div className="max-w-2xl mx-auto px-5 py-8">
+              <MissingBox p={p} onAttach={onAttach} />
+            </div>
+          </div>
         ) : p.local && !local ? (
           <p className="p-6 text-sm text-ink-3 animate-pulse">Opening your PDF…</p>
         ) : (
@@ -327,6 +339,25 @@ function AttachBox({ p, onAttach }: { p: OpenPaper; onAttach: (file: File, attac
           </a>
         )}
       </div>
+    </div>
+  );
+}
+
+function MissingBox({ p, onAttach }: { p: OpenPaper; onAttach: (file: File, attachTo?: OpenPaper) => void }) {
+  const drop = useDrop((f) => onAttach(f, p));
+  return (
+    <div
+      {...drop.props}
+      className={`rounded-2xl border-2 border-dashed p-5 text-sm transition-colors ${drop.over ? "border-accent bg-accent-soft" : "border-warn/50 bg-warn-soft"}`}
+    >
+      <p className="font-medium text-ink">This PDF is no longer stored in this browser.</p>
+      <p className="mt-1 text-ink-2">
+        Browsers sometimes clear stored files (for example after a long time away, or when the disk is nearly full). Your highlights,
+        notes and matrix rows for it are still here. Drop the same PDF here, or restore a backup from the Library, to keep reading.
+      </p>
+      <FilePick onFile={(f) => onAttach(f, p)} className="mt-3 rounded-lg bg-accent text-white px-3 h-8 text-xs font-medium">
+        Re-attach PDF
+      </FilePick>
     </div>
   );
 }

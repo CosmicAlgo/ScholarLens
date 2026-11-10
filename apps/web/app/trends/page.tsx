@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { TopicSearch } from "@/components/topic-search";
+import { TrendingNow } from "@/components/trending-now";
 import { topicSlug } from "@/lib/api";
 
 export const metadata: Metadata = {
@@ -33,6 +34,11 @@ export default function TrendsPage() {
         </div>
       </section>
 
+      <div className="pb-6">
+        <TrendingNow />
+      </div>
+
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-3 pb-3">Explore by field</h2>
       <section className="grid sm:grid-cols-2 gap-4 pb-10">
         {GROUPS.map(([group, topics]) => (
           <div key={group} className="rounded-2xl border border-line bg-surface p-5">

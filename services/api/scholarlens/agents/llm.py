@@ -155,16 +155,23 @@ class GeminiLLM:
         parts: list[str] = []
         final = None
         try:
-            stream = await self.client.aio.interactions.create(
-                model=model,
-                input=_gemini_input(prompt, media),
-                system_instruction=system,
-                store=False,
-                stream=True,
-                generation_config={"max_output_tokens": _MAX_OUTPUT_TOKENS, "thinking_level": effort},
-                response_format={"type": "text", "mime_type": "application/json", "schema": schema.model_json_schema()},
+            stream = await _opened(
+                self.client.aio.interactions.create(
+                    model=model,
+                    input=_gemini_input(prompt, media),
+                    system_instruction=system,
+                    store=False,
+                    stream=True,
+                    generation_config={"max_output_tokens": _MAX_OUTPUT_TOKENS, "thinking_level": effort},
+                    response_format={
+                        "type": "text",
+                        "mime_type": "application/json",
+                        "schema": schema.model_json_schema(),
+                    },
+                ),
+                FIRST_EVENT_TIMEOUT,
             )
-            async for ev in stream:
+            async for ev in _paced(stream, FIRST_EVENT_TIMEOUT, IDLE_TIMEOUT):
                 kind = getattr(ev, "event_type", None)
                 if kind == "step.delta" and type(ev.delta).__name__ == "TextDelta":
                     parts.append(ev.delta.text or "")
@@ -205,23 +212,35 @@ class GeminiLLM:
             raise _Transient("The model returned an invalid answer.") from e
 
     async def stream_text(
-        self, *, tier: Tier, system: str, prompt: str, media: list[Media] | None = None
+        self,
+        *,
+        tier: Tier,
+        system: str,
+        prompt: str,
+        media: list[Media] | None = None,
+        first_timeout: float | None = None,
+        attempts: int | None = None,
     ) -> AsyncIterator[str]:
-        """Plain-text streaming (Copilot answers). Retries only if nothing was produced yet."""
+        """Plain-text streaming (Copilot answers). Retries only if nothing was produced yet.
+        `first_timeout` bounds the wait for the first event (the caller may fall back to another model)."""
         model, effort = self._model(tier)
-        for attempt in range(_GEMINI_ATTEMPTS):
+        tries = attempts or _GEMINI_ATTEMPTS
+        for attempt in range(tries):
             produced = False
             final = None
             try:
-                stream = await self.client.aio.interactions.create(
-                    model=model,
-                    input=_gemini_input(prompt, media),
-                    system_instruction=system,
-                    store=False,
-                    stream=True,
-                    generation_config={"max_output_tokens": _MAX_OUTPUT_TOKENS, "thinking_level": effort},
+                stream = await _opened(
+                    self.client.aio.interactions.create(
+                        model=model,
+                        input=_gemini_input(prompt, media),
+                        system_instruction=system,
+                        store=False,
+                        stream=True,
+                        generation_config={"max_output_tokens": _MAX_OUTPUT_TOKENS, "thinking_level": effort},
+                    ),
+                    first_timeout or FIRST_EVENT_TIMEOUT,
                 )
-                async for ev in stream:
+                async for ev in _paced(stream, first_timeout or FIRST_EVENT_TIMEOUT, IDLE_TIMEOUT):
                     kind = getattr(ev, "event_type", None)
                     if kind == "step.delta" and type(ev.delta).__name__ == "TextDelta" and ev.delta.text:
                         produced = True
@@ -232,14 +251,14 @@ class GeminiLLM:
                         code = getattr(getattr(ev, "error", None), "code", None)
                         raise _classify(code if isinstance(code, int) else None)
             except AgentError as e:
-                if produced or not isinstance(e, _Transient) or attempt == _GEMINI_ATTEMPTS - 1:
+                if produced or not isinstance(e, _Transient) or attempt == tries - 1:
                     raise
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             except Exception as e:
                 status = getattr(e, "status_code", None) or getattr(e, "code", None)
                 err = _classify(status if isinstance(status, int) else None)
-                if produced or not isinstance(err, _Transient) or attempt == _GEMINI_ATTEMPTS - 1:
+                if produced or not isinstance(err, _Transient) or attempt == tries - 1:
                     raise err from e
                 await asyncio.sleep(1.5 * (attempt + 1))
                 continue
@@ -251,6 +270,33 @@ class GeminiLLM:
             if final is None and not produced:
                 raise AgentError("The AI provider's response was cut off.")
             return
+
+
+FIRST_EVENT_TIMEOUT = 75.0  # seconds before the provider must send anything at all
+IDLE_TIMEOUT = 60.0  # seconds allowed between two streamed events
+
+
+async def _opened(call, timeout: float):
+    """Await the request that opens a stream; on the free tier it can queue for minutes."""
+    try:
+        return await asyncio.wait_for(call, timeout)
+    except TimeoutError as e:
+        raise _Transient("The AI model took too long to respond.") from e
+
+
+async def _paced(stream, first: float, idle: float):
+    """Iterate a provider stream, failing instead of hanging when it goes quiet."""
+    it = stream.__aiter__()
+    wait = first
+    while True:
+        try:
+            ev = await asyncio.wait_for(it.__anext__(), wait)
+        except StopAsyncIteration:
+            return
+        except TimeoutError as e:
+            raise _Transient("The AI model took too long to respond.") from e
+        wait = idle
+        yield ev
 
 
 class _Transient(AgentError):
@@ -338,7 +384,14 @@ class AnthropicLLM:
         return resp.parsed_output
 
     async def stream_text(
-        self, *, tier: Tier, system: str, prompt: str, media: list[Media] | None = None
+        self,
+        *,
+        tier: Tier,
+        system: str,
+        prompt: str,
+        media: list[Media] | None = None,
+        first_timeout: float | None = None,
+        attempts: int | None = None,
     ) -> AsyncIterator[str]:
         anthropic = self._anthropic
         model, effort = self._model(tier)

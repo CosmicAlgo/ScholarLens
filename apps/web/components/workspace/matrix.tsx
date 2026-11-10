@@ -78,6 +78,14 @@ export function Matrix({
                       {r?.row ? (
                         <>
                           {r.row[c.key].text}{" "}
+                          {r.row[c.key].uncited && (
+                            <span
+                              className="inline-flex mx-0.5 rounded px-1 text-[0.65rem] font-medium bg-warn-soft text-warn"
+                              title="The model gave no valid source for this cell. Treat it as unverified, or refill the row."
+                            >
+                              ⚠ no source
+                            </span>
+                          )}
                           {(r.row[c.key].unsupported_numbers || []).length > 0 && (
                             <span
                               className="inline-flex mx-0.5 rounded px-1 text-[0.65rem] font-medium bg-warn-soft text-warn"

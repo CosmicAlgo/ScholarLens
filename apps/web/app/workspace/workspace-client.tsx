@@ -11,79 +11,70 @@ import { Notes } from "@/components/workspace/notes";
 import type { PdfSelection, SelAction } from "@/components/workspace/pdf-view";
 import { Reader, type ReaderView } from "@/components/workspace/reader";
 import { fetchPaper, type Paper } from "@/lib/api";
-import { deleteDoc, docId, figurePages, getDoc, putDoc, readPdf, renderPages } from "@/lib/docstore";
+import { deleteDoc, docId, figurePages, getDoc, keepStorage, putDoc, readPdf, renderPages } from "@/lib/docstore";
+import { sendCopilot, stopCopilot } from "@/lib/copilot-run";
+import { isAnswering, setLive, setWS, useLive, useWorkspace, whenRestored } from "@/lib/store";
 import {
-  askCopilot,
-  EMPTY,
   extractRow,
-  loadState,
   prepareFulltext,
   readFigures,
-  saveState,
   type FigureItem,
   type Highlight,
-  type Message,
   type Mode,
   type OpenPaper,
   type Selection,
-  type WorkspaceState,
 } from "@/lib/workspace";
 
 const MAX_OPEN = 5;
 const MAX_UPLOAD = 40 * 1024 * 1024;
 type Pane = "library" | "paper" | "copilot";
-type Assistant = Extract<Message, { role: "assistant" }>;
+
+const patchPaper = (id: string, patch: Partial<OpenPaper>) =>
+  setWS((cur) => ({ ...cur, papers: cur.papers.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+
+async function indexPaper(id: string) {
+  patchPaper(id, { fulltext: "loading" });
+  try {
+    const r = await prepareFulltext(id);
+    patchPaper(id, { fulltext: r.status, pages: r.pages });
+  } catch {
+    patchPaper(id, { fulltext: "failed" });
+  }
+}
+
+const setS = setWS;
+type StatusMap = Record<string, string>;
+const setMatrixStatus = (fn: (m: StatusMap) => StatusMap) => setLive((l) => ({ ...l, matrixStatus: fn(l.matrixStatus) }));
+const setFigStatus = (fn: (m: StatusMap) => StatusMap) => setLive((l) => ({ ...l, figStatus: fn(l.figStatus) }));
+
+// Papers still being prepared when the tab was closed: pick them up again.
+whenRestored((s) =>
+  s.papers.filter((p) => !p.local && !p.id.startsWith("U") && (p.fulltext === "loading" || !p.fulltext)).forEach((p) => indexPaper(p.id)),
+);
 
 export function WorkspaceClient() {
-  const [s, setS] = useState<WorkspaceState>(EMPTY);
-  const [ready, setReady] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const s = useWorkspace();
+  const { matrixStatus, figStatus } = useLive();
+  const busy = isAnswering(s);
   const [pane, setPane] = useState<Pane>("library");
   const [readerView, setReaderView] = useState<ReaderView>("paper");
-  const [figStatus, setFigStatus] = useState<Record<string, string>>({});
   const [jump, setJump] = useState<{ id: string; page: number; text?: string; nonce: number } | null>(null);
   const [pending, setPending] = useState<PendingSelection | null>(null);
   const [focusNonce, setFocusNonce] = useState(0);
-  const [matrixStatus, setMatrixStatus] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<{ text: string; tone: "info" | "bad" } | null>(null);
   const wide = useWide();
   const libPanel = usePanelRef();
   const copPanel = usePanelRef();
   const [libClosed, setLibClosed] = useState(false);
   const [copClosed, setCopClosed] = useState(false);
-  const abort = useRef<AbortController | null>(null);
   const sRef = useRef(s);
   sRef.current = s;
 
-  // Restore the session after mount (localStorage is browser-only).
-  useEffect(() => {
-    const restored = loadState();
-    setS(restored);
-    setReady(true);
-    restored.papers.filter((p) => !p.local && !p.id.startsWith("U") && (p.fulltext === "loading" || !p.fulltext)).forEach((p) => indexPaper(p.id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useEffect(() => {
-    if (ready) saveState(s);
-  }, [s, ready]);
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(null), notice.tone === "bad" ? 7000 : 5000);
     return () => clearTimeout(t);
   }, [notice]);
-
-  const patchPaper = (id: string, patch: Partial<OpenPaper>) =>
-    setS((cur) => ({ ...cur, papers: cur.papers.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
-
-  async function indexPaper(id: string) {
-    patchPaper(id, { fulltext: "loading" });
-    try {
-      const r = await prepareFulltext(id);
-      patchPaper(id, { fulltext: r.status, pages: r.pages });
-    } catch {
-      patchPaper(id, { fulltext: "failed" });
-    }
-  }
 
   const openPaper = useCallback((p: Paper | OpenPaper) => {
     const isNew = !sRef.current.papers.some((x) => x.id === p.id);
@@ -100,7 +91,7 @@ export function WorkspaceClient() {
       track("paper_opened", { id: p.id });
       indexPaper(p.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   const openById = useCallback(
@@ -150,13 +141,14 @@ export function WorkspaceClient() {
       if (!parsed.passages.length) throw new Error("No selectable text in this PDF (is it a scan?).");
       const title = attachTo?.title ?? parsed.title;
       await putDoc({ id, title, data, passages: parsed.passages, pages: parsed.pages, at: Date.now() });
+      const kept = await keepStorage();
       if (attachTo) {
-        patchPaper(id, { local: true, pages: parsed.pages });
+        patchPaper(id, { local: true, pages: parsed.pages, localAt: Date.now() });
         setS((cur) => ({ ...cur, activeId: id }));
       } else openPaper(uploadPaper(id, title, parsed.pages));
       track("pdf_uploaded", { pages: parsed.pages, attached: !!attachTo });
       setNotice({
-        text: "Your PDF stays in this browser. When you ask Copilot, only the passages it needs are sent (to Google Gemini) to answer.",
+        text: `Your PDF stays in this browser${kept ? " (protected from automatic clean-up)" : ""}. Copilot only sends the passages it needs to Google Gemini. Use “Back up” in the Library to keep a copy.`,
         tone: "info",
       });
     } catch (e) {
@@ -164,72 +156,13 @@ export function WorkspaceClient() {
     }
   }
 
-  async function documents(papers: OpenPaper[]) {
-    const out = [];
-    for (const p of papers.filter((x) => x.local)) {
-      const d = await getDoc(p.id);
-      if (d) out.push({ id: p.id, title: d.title, passages: d.passages.slice(0, 600) });
-    }
-    return out;
-  }
-
-  async function send(text: string, mode: Mode, selection?: Selection | null) {
+  function send(text: string, mode: Mode, selection?: Selection | null) {
     const sel =
       selection ??
       (pending ? { paper_id: pending.paper_id, page: pending.page, text: pending.text, ...(pending.image ? { image: pending.image } : {}) } : null);
     setPending(null);
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    setBusy(true);
     setPane("copilot");
-    track("copilot_sent", { mode, open: s.papers.length, selection: !!sel });
-    const cur = sRef.current;
-    const history = cur.messages.slice(-6).map((m) => ({ role: m.role, text: m.text.slice(0, 1500) }));
-    const open = cur.papers.map((p) => ({ id: p.id, title: p.title }));
-    const assistant: Assistant = { role: "assistant", text: "", mode, jobs: [], evidence: [], done: false, at: Date.now() };
-    setS((c) => ({
-      ...c,
-      messages: [...c.messages, { role: "user", text, mode, at: Date.now(), ...(sel ? { selection: sel } : {}) }, assistant],
-    }));
-
-    const update = (fn: (m: Assistant) => Assistant) =>
-      setS((c) => {
-        const msgs = [...c.messages];
-        const last = msgs[msgs.length - 1];
-        if (last?.role === "assistant") msgs[msgs.length - 1] = fn(last);
-        return { ...c, messages: msgs };
-      });
-
-    try {
-      await askCopilot(
-        { message: text, mode, open_papers: open, history, documents: await documents(cur.papers), selection: sel },
-        {
-          onDispatch: (jobs) => update((m) => ({ ...m, jobs: jobs.map((j) => ({ ...j, status: "running" as const })) })),
-          onJob: (job, status, note) =>
-            update((m) => {
-              let marked = false;
-              const jobs = m.jobs.map((j) => {
-                if (!marked && j.status === "running" && j.kind === job.kind && j.query === job.query && j.target === job.target) {
-                  marked = true;
-                  return { ...j, status, note };
-                }
-                return j;
-              });
-              return { ...m, jobs };
-            }),
-          onEvidence: (evidence) => update((m) => ({ ...m, evidence })),
-          onToken: (t) => update((m) => ({ ...m, text: m.text + t })),
-          onVerified: (v) => update((m) => ({ ...m, verification: v, done: true, ...(mode === "brainstorm" ? { novelty: "pending" as const } : {}) })),
-          onNovelty: (n) => update((m) => ({ ...m, novelty: n })),
-        },
-        ctrl.signal,
-      );
-    } catch (e) {
-      const msg = ctrl.signal.aborted ? "Stopped." : e instanceof Error ? e.message : "Copilot failed.";
-      update((m) => ({ ...m, done: true, error: m.verification ? undefined : msg, novelty: m.novelty === "pending" ? [] : m.novelty }));
-    } finally {
-      setBusy(false);
-    }
+    sendCopilot(text, mode, sel);
   }
 
   function onAction(p: OpenPaper, a: SelAction, sel: PdfSelection, color?: Highlight["color"]) {
@@ -329,6 +262,7 @@ export function WorkspaceClient() {
       notes={notes}
       onKeep={(p) => setS((c) => (c.queue.some((x) => x.id === p.id) ? c : { ...c, queue: [pick(p), ...c.queue].slice(0, 100) }))}
       onUnqueue={(id) => setS((c) => ({ ...c, queue: c.queue.filter((x) => x.id !== id) }))}
+      notify={(text, tone) => setNotice({ text, tone })}
       onScreened={(kept, total, seconds) => {
         track("screened", { kept, total, seconds });
         if (kept) setNotice({ text: `${kept} of ${total} papers added to your reading list.`, tone: "info" });
@@ -361,7 +295,7 @@ export function WorkspaceClient() {
       focusNonce={focusNonce}
       onClearPending={() => setPending(null)}
       onSend={(t, m) => send(t, m)}
-      onStop={() => abort.current?.abort()}
+      onStop={stopCopilot}
       onClear={() => setS((c) => ({ ...c, messages: [] }))}
       h={h}
     />

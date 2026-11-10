@@ -123,6 +123,20 @@ body {
 }
 
 /* Workspace: full-height app shell with a faint technical grid behind the panels. */
+/* One background for the whole site: the workspace's faint grid, fading out below the fold on
+   content pages so long text stays calm. */
+.site-bg {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: -1px -1px;
+  background-attachment: fixed;
+}
+.site-bg > main:not(:has(.workspace-bg)) {
+  background: linear-gradient(to bottom, transparent, var(--bg) 70vh);
+}
 .workspace-bg {
   background-color: var(--bg);
   background-image:
