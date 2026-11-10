@@ -4,10 +4,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { EvidenceItem } from "@/lib/workspace";
 
-const CITE = /\[((?:[SPMC]):[^\]\s]+)\]/g;
+const CITE = /\[((?:[SPMCH]):[^\]\s]+)\]/g;
 
 export type CiteHandlers = {
-  openPage: (paperId: string, page: number) => void;
+  openPage: (paperId: string, page: number, text?: string) => void;
   openPaper: (paperId: string) => void;
 };
 
@@ -70,10 +70,10 @@ function Chip({ id, e, bad, h }: { id: string; e?: EvidenceItem; bad: boolean; h
   let label = "source";
   let title = "";
   let onClick = () => {};
-  if (e.kind === "passage") {
-    label = `p.${e.page}`;
+  if (e.kind === "passage" || e.kind === "highlight") {
+    label = e.kind === "highlight" ? `your highlight, p.${e.page}` : `p.${e.page}`;
     title = `${e.title}, page ${e.page}:\n“${e.text.slice(0, 280)}…”`;
-    onClick = () => h.openPage(e.paper_id, e.page);
+    onClick = () => h.openPage(e.paper_id, e.page, e.text);
   } else if (e.kind === "paper") {
     const who = e.authors[0]?.split(" ").at(-1) || "paper";
     label = `${who}${e.year ? ` ’${String(e.year).slice(2)}` : ""}`;
@@ -90,7 +90,7 @@ function Chip({ id, e, bad, h }: { id: string; e?: EvidenceItem; bad: boolean; h
       onClick={onClick}
       title={title}
       className={`inline-flex align-baseline mx-0.5 rounded px-1.5 text-[0.7rem] font-medium leading-5 transition-colors ${
-        e.kind === "passage"
+        e.kind === "passage" || e.kind === "highlight"
           ? "bg-accent-soft text-accent-ink hover:bg-accent hover:text-white"
           : e.kind === "paper"
             ? `${flagged ? "bg-warn-soft text-warn" : "bg-surface-2 text-ink-2"} hover:bg-ink hover:text-bg`

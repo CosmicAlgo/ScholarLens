@@ -3,30 +3,45 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { track } from "@/components/analytics";
-import { CopilotPanel } from "@/components/workspace/copilot-panel";
+import { CopilotPanel, type PendingSelection } from "@/components/workspace/copilot-panel";
 import { Library } from "@/components/workspace/library";
+import { Matrix } from "@/components/workspace/matrix";
+import { Notes } from "@/components/workspace/notes";
+import type { PdfSelection, SelAction } from "@/components/workspace/pdf-view";
 import { Reader } from "@/components/workspace/reader";
 import { fetchPaper, type Paper } from "@/lib/api";
+import { deleteDoc, docId, getDoc, putDoc, readPdf } from "@/lib/docstore";
 import {
   askCopilot,
   EMPTY,
+  extractRow,
   loadState,
   prepareFulltext,
   saveState,
+  type Highlight,
   type Message,
   type Mode,
   type OpenPaper,
+  type Selection,
   type WorkspaceState,
 } from "@/lib/workspace";
 
 const MAX_OPEN = 5;
+const MAX_UPLOAD = 40 * 1024 * 1024;
 type Pane = "library" | "paper" | "copilot";
+type Assistant = Extract<Message, { role: "assistant" }>;
 
 export function WorkspaceClient() {
   const [s, setS] = useState<WorkspaceState>(EMPTY);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pane, setPane] = useState<Pane>("library");
+  const [readerView, setReaderView] = useState<"paper" | "matrix">("paper");
+  const [jump, setJump] = useState<{ id: string; page: number; text?: string; nonce: number } | null>(null);
+  const [pending, setPending] = useState<PendingSelection | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
+  const [matrixStatus, setMatrixStatus] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<{ text: string; tone: "info" | "bad" } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const sRef = useRef(s);
   sRef.current = s;
@@ -36,12 +51,17 @@ export function WorkspaceClient() {
     const restored = loadState();
     setS(restored);
     setReady(true);
-    restored.papers.filter((p) => p.fulltext === "loading" || !p.fulltext).forEach((p) => indexPaper(p.id));
+    restored.papers.filter((p) => !p.local && !p.id.startsWith("U") && (p.fulltext === "loading" || !p.fulltext)).forEach((p) => indexPaper(p.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (ready) saveState(s);
   }, [s, ready]);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), notice.tone === "bad" ? 7000 : 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const patchPaper = (id: string, patch: Partial<OpenPaper>) =>
     setS((cur) => ({ ...cur, papers: cur.papers.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
@@ -60,14 +80,14 @@ export function WorkspaceClient() {
     const isNew = !sRef.current.papers.some((x) => x.id === p.id);
     setS((cur) => {
       const exists = cur.papers.some((x) => x.id === p.id);
-      const papers = exists
-        ? cur.papers
-        : [...cur.papers, { ...pick(p), fulltext: "loading" as const }].slice(-MAX_OPEN);
+      const fresh: OpenPaper = { ...pick(p), fulltext: "local" in p && p.local ? undefined : "loading" };
+      const papers = exists ? cur.papers : [...cur.papers, fresh].slice(-MAX_OPEN);
       const recent = [{ id: p.id, title: p.title, at: Date.now() }, ...cur.recent.filter((r) => r.id !== p.id)].slice(0, 30);
       return { ...cur, papers, activeId: p.id, recent };
     });
+    setReaderView("paper");
     setPane("paper");
-    if (isNew) {
+    if (isNew && !p.id.startsWith("U") && !("local" in p && p.local)) {
       track("paper_opened", { id: p.id });
       indexPaper(p.id);
     }
@@ -76,53 +96,102 @@ export function WorkspaceClient() {
 
   const openById = useCallback(
     async (id: string) => {
-      const open = s.papers.find((p) => p.id === id);
-      if (open) return setS((cur) => ({ ...cur, activeId: id }));
+      setReaderView("paper");
+      setPane("paper");
+      if (sRef.current.papers.some((p) => p.id === id)) return setS((cur) => ({ ...cur, activeId: id }));
+      if (id.startsWith("U")) {
+        const d = await getDoc(id);
+        if (d) openPaper(uploadPaper(id, d.title, d.pages));
+        return;
+      }
       try {
-        const p = await fetchPaper(id);
-        openPaper(p);
+        openPaper(await fetchPaper(id));
       } catch {}
     },
-    [s.papers, openPaper],
+    [openPaper],
   );
 
   const openPage = useCallback(
-    (id: string, page: number) => {
-      setS((cur) => ({ ...cur, activeId: id, page: { ...cur.page, [id]: page } }));
-      setPane("paper");
-      if (!s.papers.some((p) => p.id === id)) openById(id);
+    (id: string, page: number, text?: string) => {
+      setJump({ id, page, text, nonce: Date.now() });
+      if (sRef.current.papers.some((p) => p.id === id)) {
+        setS((cur) => ({ ...cur, activeId: id }));
+        setReaderView("paper");
+        setPane("paper");
+      } else openById(id);
     },
-    [s.papers, openById],
+    [openById],
   );
 
   const closePaper = (id: string) =>
     setS((cur) => {
       const papers = cur.papers.filter((p) => p.id !== id);
+      if (id.startsWith("U") && !cur.highlights.some((h) => h.paper_id === id)) deleteDoc(id);
       return { ...cur, papers, activeId: cur.activeId === id ? (papers.at(-1)?.id ?? null) : cur.activeId };
     });
 
-  async function send(text: string, mode: Mode) {
+  async function upload(file: File, attachTo?: OpenPaper) {
+    if (file.type && file.type !== "application/pdf") return setNotice({ text: "That isn't a PDF.", tone: "bad" });
+    if (file.size > MAX_UPLOAD) return setNotice({ text: "PDFs up to 40 MB, please.", tone: "bad" });
+    setNotice({ text: `Reading ${file.name}…`, tone: "info" });
+    try {
+      const data = await file.arrayBuffer();
+      const id = attachTo?.id ?? (await docId(data));
+      const parsed = await readPdf(data, file.name);
+      if (!parsed.passages.length) throw new Error("No selectable text in this PDF (is it a scan?).");
+      const title = attachTo?.title ?? parsed.title;
+      await putDoc({ id, title, data, passages: parsed.passages, pages: parsed.pages, at: Date.now() });
+      if (attachTo) {
+        patchPaper(id, { local: true, pages: parsed.pages });
+        setS((cur) => ({ ...cur, activeId: id }));
+      } else openPaper(uploadPaper(id, title, parsed.pages));
+      track("pdf_uploaded", { pages: parsed.pages, attached: !!attachTo });
+      setNotice({
+        text: "Your PDF stays in this browser. When you ask Copilot, only the passages it needs are sent (to Google Gemini) to answer.",
+        tone: "info",
+      });
+    } catch (e) {
+      setNotice({ text: e instanceof Error ? e.message : "Could not read that PDF.", tone: "bad" });
+    }
+  }
+
+  async function documents(papers: OpenPaper[]) {
+    const out = [];
+    for (const p of papers.filter((x) => x.local)) {
+      const d = await getDoc(p.id);
+      if (d) out.push({ id: p.id, title: d.title, passages: d.passages.slice(0, 600) });
+    }
+    return out;
+  }
+
+  async function send(text: string, mode: Mode, selection?: Selection | null) {
+    const sel = selection ?? (pending ? { paper_id: pending.paper_id, page: pending.page, text: pending.text } : null);
+    setPending(null);
     const ctrl = new AbortController();
     abort.current = ctrl;
     setBusy(true);
     setPane("copilot");
-    track("copilot_sent", { mode, open: s.papers.length });
-    const history = s.messages.slice(-6).map((m) => ({ role: m.role, text: m.text.slice(0, 1500) }));
-    const open = s.papers.map((p) => ({ id: p.id, title: p.title }));
-    const assistant: Message = { role: "assistant", text: "", jobs: [], evidence: [], done: false, at: Date.now() };
-    setS((cur) => ({ ...cur, messages: [...cur.messages, { role: "user", text, mode, at: Date.now() }, assistant] }));
+    track("copilot_sent", { mode, open: s.papers.length, selection: !!sel });
+    const cur = sRef.current;
+    const history = cur.messages.slice(-6).map((m) => ({ role: m.role, text: m.text.slice(0, 1500) }));
+    const open = cur.papers.map((p) => ({ id: p.id, title: p.title }));
+    const assistant: Assistant = { role: "assistant", text: "", mode, jobs: [], evidence: [], done: false, at: Date.now() };
+    setS((c) => ({
+      ...c,
+      messages: [...c.messages, { role: "user", text, mode, at: Date.now(), ...(sel ? { selection: sel } : {}) }, assistant],
+    }));
 
-    const update = (fn: (m: Extract<Message, { role: "assistant" }>) => Extract<Message, { role: "assistant" }>) =>
-      setS((cur) => {
-        const msgs = [...cur.messages];
+    const update = (fn: (m: Assistant) => Assistant) =>
+      setS((c) => {
+        const msgs = [...c.messages];
         const last = msgs[msgs.length - 1];
         if (last?.role === "assistant") msgs[msgs.length - 1] = fn(last);
-        return { ...cur, messages: msgs };
+        return { ...c, messages: msgs };
       });
 
     try {
       await askCopilot(
-        { message: text, mode, open_papers: open, history },
+        { message: text, mode, open_papers: open, history, documents: await documents(cur.papers), selection: sel },
         {
           onDispatch: (jobs) => update((m) => ({ ...m, jobs: jobs.map((j) => ({ ...j, status: "running" as const })) })),
           onJob: (job, status, note) =>
@@ -139,29 +208,98 @@ export function WorkspaceClient() {
             }),
           onEvidence: (evidence) => update((m) => ({ ...m, evidence })),
           onToken: (t) => update((m) => ({ ...m, text: m.text + t })),
-          onVerified: (v) => update((m) => ({ ...m, verification: v, done: true })),
+          onVerified: (v) => update((m) => ({ ...m, verification: v, done: true, ...(mode === "brainstorm" ? { novelty: "pending" as const } : {}) })),
+          onNovelty: (n) => update((m) => ({ ...m, novelty: n })),
         },
         ctrl.signal,
       );
     } catch (e) {
-      if (!ctrl.signal.aborted) update((m) => ({ ...m, done: true, error: e instanceof Error ? e.message : "Copilot failed." }));
-      else update((m) => ({ ...m, done: true, error: "Stopped." }));
+      const msg = ctrl.signal.aborted ? "Stopped." : e instanceof Error ? e.message : "Copilot failed.";
+      update((m) => ({ ...m, done: true, error: m.verification ? undefined : msg, novelty: m.novelty === "pending" ? [] : m.novelty }));
     } finally {
       setBusy(false);
     }
   }
 
+  function onAction(p: OpenPaper, a: SelAction, sel: PdfSelection, color?: Highlight["color"]) {
+    const selection = { paper_id: p.id, page: sel.page, text: sel.text };
+    track("selection_action", { action: a });
+    if (a === "highlight") {
+      const h: Highlight = { id: crypto.randomUUID(), paper_id: p.id, title: p.title, page: sel.page, text: sel.text, rects: sel.rects, color: color || "yellow", at: Date.now() };
+      return setS((c) => ({ ...c, highlights: [...c.highlights, h] }));
+    }
+    if (a === "ask") {
+      setPending({ ...selection, title: p.title });
+      setPane("copilot");
+      return setFocusNonce((n) => n + 1);
+    }
+    if (busy) return setNotice({ text: "Copilot is still answering. Try again in a moment.", tone: "info" });
+    if (a === "explain") send("Explain this passage in plain language, with the context from the paper.", "explain", selection);
+    if (a === "verify") send("Is this claim supported or contradicted by other work?", "verify", selection);
+    if (a === "related") send("Find related work on what this passage describes.", "related", selection);
+  }
+
+  async function fillMatrix(ids: string[]) {
+    track("matrix_filled", { rows: ids.length });
+    const queue = [...ids];
+    const work = async () => {
+      for (let id = queue.shift(); id; id = queue.shift()) {
+        const p = sRef.current.papers.find((x) => x.id === id);
+        if (!p) continue;
+        setMatrixStatus((m) => ({ ...m, [id!]: "loading" }));
+        try {
+          const passages = p.local ? (await getDoc(p.id))?.passages.slice(0, 600) : undefined;
+          const row = await extractRow(p.id, p.title, passages);
+          setS((c) => ({ ...c, matrix: { ...c.matrix, [row.paper_id]: row } }));
+          setMatrixStatus((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id)));
+        } catch (e) {
+          setMatrixStatus((m) => ({ ...m, [id!]: e instanceof Error ? e.message : "Failed." }));
+        }
+      }
+    };
+    await Promise.all([work(), work()]); // two rows at a time
+  }
+
   const h = { openPage, openPaper: openById };
-  const library = <Library state={s} onOpen={openPaper} onActivate={openById} />;
+  const notes = (
+    <Notes
+      highlights={s.highlights}
+      papers={s.papers}
+      onOpen={(x) => openPage(x.paper_id, x.page)}
+      onAsk={(x) => {
+        setPending({ paper_id: x.paper_id, page: x.page, text: x.text, title: x.title });
+        setPane("copilot");
+        setFocusNonce((n) => n + 1);
+      }}
+      onDelete={(id) => setS((c) => ({ ...c, highlights: c.highlights.filter((x) => x.id !== id) }))}
+      onNote={(id, note) => setS((c) => ({ ...c, highlights: c.highlights.map((x) => (x.id === id ? { ...x, note } : x)) }))}
+    />
+  );
+  const library = <Library state={s} onOpen={openPaper} onActivate={openById} onUpload={(f) => upload(f)} notes={notes} />;
   const reader = (
-    <Reader papers={s.papers} activeId={s.activeId} page={s.page} onActivate={(id) => setS((c) => ({ ...c, activeId: id }))} onClose={closePaper} />
+    <Reader
+      papers={s.papers}
+      activeId={s.activeId}
+      highlights={s.highlights}
+      jump={jump}
+      view={readerView}
+      setView={setReaderView}
+      matrix={<Matrix papers={s.papers} rows={s.matrix} status={matrixStatus} onFill={fillMatrix} openPage={openPage} />}
+      onActivate={(id) => setS((c) => ({ ...c, activeId: id }))}
+      onClose={closePaper}
+      onAction={onAction}
+      onAttach={upload}
+    />
   );
   const copilot = (
     <CopilotPanel
       messages={s.messages}
       papers={s.papers}
       busy={busy}
-      onSend={send}
+      pending={pending}
+      focusNonce={focusNonce}
+      onClearPending={() => setPending(null)}
+      onSend={(t, m) => send(t, m)}
       onStop={() => abort.current?.abort()}
       onClear={() => setS((c) => ({ ...c, messages: [] }))}
       h={h}
@@ -170,21 +308,44 @@ export function WorkspaceClient() {
 
   return (
     <div className="h-[calc(100dvh-3.5rem)] flex flex-col workspace-bg">
-      {/* Phones: one pane at a time */}
-      <div className="md:hidden flex border-b border-line bg-surface" role="tablist">
-        {(["library", "paper", "copilot"] as Pane[]).map((p) => (
+      {notice && (
+        <div
+          role="status"
+          className={`fixed z-50 left-1/2 -translate-x-1/2 bottom-20 md:bottom-6 max-w-md w-[calc(100%-2rem)] rounded-xl border px-4 py-2.5 text-sm shadow-lg ${
+            notice.tone === "bad" ? "bg-bad-soft text-bad border-bad/30" : "bg-surface text-ink-2 border-line"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
+
+      {/* Phones: one pane at a time, switched from a bottom bar within thumb reach */}
+      <div className="md:hidden flex-1 min-h-0 bg-surface">{pane === "library" ? library : pane === "paper" ? reader : copilot}</div>
+      <nav className="md:hidden grid grid-cols-3 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]" aria-label="Workspace panes">
+        {(
+          [
+            ["library", "Library", "M4 5h4v14H4zM10 5h4v14h-4zM16 6l3.5 1-3 12-3.5-1z"],
+            ["paper", "Reader", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h4"],
+            ["copilot", "Copilot", "M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4zM18 15l.9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9z"],
+          ] as const
+        ).map(([id, label, d]) => (
           <button
-            key={p}
-            role="tab"
-            aria-selected={pane === p}
-            onClick={() => setPane(p)}
-            className={`flex-1 py-2.5 text-sm capitalize ${pane === p ? "text-ink border-b-2 border-accent font-medium" : "text-ink-3"}`}
+            key={id}
+            onClick={() => setPane(id)}
+            aria-current={pane === id ? "page" : undefined}
+            className={`relative flex flex-col items-center gap-0.5 py-2 text-[0.68rem] ${pane === id ? "text-accent-ink font-medium" : "text-ink-3"}`}
           >
-            {p}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+              <path d={d} />
+            </svg>
+            {label}
+            {id === "copilot" && busy && <span className="absolute top-1.5 right-[30%] w-2 h-2 rounded-full bg-accent animate-pulse" />}
+            {id === "paper" && s.papers.length > 0 && (
+              <span className="absolute top-1 right-[28%] min-w-4 h-4 px-1 rounded-full bg-accent text-white text-[0.6rem] leading-4">{s.papers.length}</span>
+            )}
           </button>
         ))}
-      </div>
-      <div className="md:hidden flex-1 min-h-0 bg-surface">{pane === "library" ? library : pane === "paper" ? reader : copilot}</div>
+      </nav>
 
       {/* Desktop: three resizable panels */}
       <div className="hidden md:block flex-1 min-h-0 p-2">
@@ -210,6 +371,25 @@ export function WorkspaceClient() {
   );
 }
 
+function uploadPaper(id: string, title: string, pages: number): OpenPaper {
+  return {
+    id,
+    title,
+    year: null,
+    venue: null,
+    authors: [],
+    doi: null,
+    abstract: null,
+    cited_by_count: 0,
+    is_retracted: false,
+    is_preprint: false,
+    is_oa: false,
+    oa_url: null,
+    local: true,
+    pages,
+  };
+}
+
 function pick(p: Paper | OpenPaper): OpenPaper {
   return {
     id: p.id,
@@ -224,5 +404,6 @@ function pick(p: Paper | OpenPaper): OpenPaper {
     is_preprint: p.is_preprint,
     is_oa: p.is_oa,
     oa_url: p.oa_url,
+    ...("local" in p && p.local ? { local: true, pages: p.pages } : {}),
   };
 }

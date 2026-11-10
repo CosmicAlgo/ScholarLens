@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "next": "16.4.5",
+    "pdfjs-dist": "6.3.289",
     "posthog-js": "^1.447.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "^10.1.0",
+    "react-pdf": "11.0.0",
     "react-resizable-panels": "^4.19.1",
     "remark-gfm": "^4.0.1"
   },

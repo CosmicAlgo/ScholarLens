@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Paper, Trend } from "@/lib/api";
 import { fetchSearch, fetchTrend } from "@/lib/api";
 import { LABELS, pct } from "@/lib/format";
@@ -11,11 +11,17 @@ export function Library({
   state,
   onOpen,
   onActivate,
+  onUpload,
+  notes,
 }: {
   state: WorkspaceState;
   onOpen: (p: Paper) => void;
   onActivate: (id: string) => void;
+  onUpload: (f: File) => void;
+  notes: React.ReactNode;
 }) {
+  const [tab, setTab] = useState<"search" | "notes">("search");
+  const file = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Paper[] | null>(null);
   const [trend, setTrend] = useState<Trend | null>(null);
@@ -43,6 +49,42 @@ export function Library({
 
   return (
     <div className="h-full flex flex-col min-h-0">
+      <div className="flex items-center gap-1 px-2 pt-2 border-b border-line" role="tablist">
+        {(["search", "notes"] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px ${tab === t ? "border-accent text-ink" : "border-transparent text-ink-3 hover:text-ink"}`}
+          >
+            {t === "search" ? "Library" : `Notes${state.highlights.length ? ` (${state.highlights.length})` : ""}`}
+          </button>
+        ))}
+        <span className="flex-1" />
+        <button
+          onClick={() => file.current?.click()}
+          className="mb-1 rounded-lg border border-line px-2 h-7 text-[0.7rem] text-ink-2 hover:border-accent hover:text-accent-ink"
+          title="Open your own PDF. It stays in this browser."
+        >
+          + Upload PDF
+        </button>
+        <input
+          ref={file}
+          type="file"
+          accept="application/pdf"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onUpload(f);
+            e.target.value = "";
+          }}
+        />
+      </div>
+      {tab === "notes" ? (
+        <div className="flex-1 min-h-0">{notes}</div>
+      ) : (
+      <>
       <form onSubmit={search} className="p-3 border-b border-line">
         <label htmlFor="lib-q" className="sr-only">
           Search papers
@@ -86,6 +128,7 @@ export function Library({
                 }`}
               >
                 <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${p.id === state.activeId ? "bg-accent" : "bg-line"}`} />
+                {p.local && <span className="text-[0.65rem] text-accent-ink shrink-0 mt-0.5">PDF</span>}
                 <span className="line-clamp-2">{p.title}</span>
               </button>
             ))}
@@ -127,6 +170,8 @@ export function Library({
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -149,7 +194,7 @@ function ResultRow({ p, open, onClick }: { p: Paper; open: boolean; onClick: () 
         <span>{p.cited_by_count.toLocaleString("en-GB")} cites</span>
         {p.is_retracted && <span className="rounded px-1 bg-bad-soft text-bad font-medium">Retracted</span>}
         {p.is_preprint && <span className="rounded px-1 bg-warn-soft text-warn">Preprint</span>}
-        {p.is_oa && <span className="rounded px-1 bg-good-soft text-good">Full text</span>}
+        {p.is_oa && <span className="rounded px-1 bg-good-soft text-good">Open access</span>}
         {open && <span className="text-accent-ink">open</span>}
       </div>
     </button>
