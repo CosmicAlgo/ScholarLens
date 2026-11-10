@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from . import fulltext, openalex
-from .agents import copilot
+from .agents import copilot, matrix, novelty
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
 from .agents.llm import AgentError, make_llm
@@ -141,11 +141,47 @@ class ChatTurn(BaseModel):
     text: str = Field(max_length=6000)
 
 
+class Passage(BaseModel):
+    page: int = Field(ge=1, le=2000)
+    text: str = Field(max_length=4000)
+
+
+class Document(BaseModel):
+    """Passages of a PDF the user brought. Extracted in their browser; used for this request only."""
+
+    id: str
+    title: str = Field(default="", max_length=500)
+    passages: list[Passage] = Field(max_length=600)
+
+
+class Selection(BaseModel):
+    paper_id: str
+    page: int = Field(ge=1, le=2000)
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class CopilotRequest(BaseModel):
     message: str = Field(min_length=2, max_length=2000)
-    mode: Literal["ask", "explain", "critique", "brainstorm", "related", "compare"] = "ask"
+    mode: Literal["ask", "explain", "critique", "brainstorm", "related", "compare", "verify"] = "ask"
     open_papers: list[copilot.OpenPaper] = Field(default_factory=list, max_length=5)
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
+    documents: list[Document] = Field(default_factory=list, max_length=5)
+    selection: Selection | None = None
+
+
+def _valid_doc_id(doc_id: str) -> str:
+    """Catalogue papers (W123) or uploaded documents (U + 12 hex)."""
+    if doc_id.startswith("U") and len(doc_id) == 13 and all(c in "0123456789abcdef" for c in doc_id[1:]):
+        return doc_id
+    return _valid_id(doc_id)
+
+
+def _docs(documents: list[Document]) -> dict[str, list[dict]]:
+    return {
+        _valid_doc_id(d.id): [{"page": x.page, "text": x.text, "title": d.title} for x in d.passages]
+        for d in documents
+        if d.passages
+    }
 
 
 @app.post("/api/copilot")
@@ -154,7 +190,10 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
     if llm is None:
         raise HTTPException(503, "AI is not enabled on this server yet. Reading, trends and search still work.")
     for p in body.open_papers:
-        _valid_id(p.id)
+        _valid_doc_id(p.id)
+    if body.selection:
+        _valid_doc_id(body.selection.paper_id)
+    docs = _docs(body.documents)
     await _check_quota(x_client_id, "copilot")
     run_id = uuid.uuid4()
     async with pool().connection() as conn:
@@ -163,7 +202,8 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
             (run_id, body.message, x_client_id),
         )
     history = "\n".join(f"{t.role}: {t.text[:1500]}" for t in body.history[-6:])
-    graph = copilot.build_dispatcher(Deps(llm=llm, tools=LiveTools()))
+    deps = Deps(llm=llm, tools=LiveTools())
+    graph = copilot.build_dispatcher(deps, documents=docs)
 
     async def stream():
         status, error, answer, evidence = "done", None, "", []
@@ -173,7 +213,10 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
                 "mode": body.mode,
                 "history": history,
                 "open_papers": [p.model_dump() for p in body.open_papers],
+                "selection": body.selection.model_dump() if body.selection else None,
             }
+            titles = {p.id: p.title for p in body.open_papers}
+            evidence.extend(copilot.selection_evidence(state["selection"], titles))
             async for update in graph.astream(state, stream_mode="updates"):
                 for delta in update.values():
                     for ev in (delta or {}).get("events", []):
@@ -187,6 +230,13 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
                 answer += chunk
                 yield {"event": "token", "data": json.dumps({"text": chunk})}
             yield {"event": "verified", "data": json.dumps(copilot.verify_answer(answer, evidence))}
+            if body.mode == "brainstorm" and answer:
+                try:
+                    checked = await novelty.check_ideas(deps, answer)
+                    yield {"event": "novelty", "data": json.dumps(checked)}
+                except Exception as e:  # the answer is already delivered; the check is a bonus
+                    log.warning("novelty check failed for %s: %r", run_id, e)
+                    yield {"event": "novelty", "data": json.dumps([])}
         except AgentError as e:
             log.warning("copilot %s failed: %s (cause: %r)", run_id, e, e.__cause__)
             status, error = "failed", f"{e} ({e.__cause__!r})"[:500]
@@ -211,6 +261,44 @@ async def copilot_chat(body: CopilotRequest, x_client_id: str = Header(default="
                 )
 
     return EventSourceResponse(stream())
+
+
+class ExtractRequest(BaseModel):
+    paper_id: str
+    title: str = Field(default="", max_length=500)
+    passages: list[Passage] = Field(default_factory=list, max_length=600)
+
+
+@app.post("/api/extract")
+async def extract(body: ExtractRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    """One evidence-matrix row (problem, method, data, findings, limitations) with cited passages."""
+    llm = make_llm(get_settings())
+    if llm is None:
+        raise HTTPException(503, "AI is not enabled on this server yet.")
+    pid = _valid_doc_id(body.paper_id)
+    if pid.startswith("U") and not body.passages:
+        raise HTTPException(422, "Uploaded documents need their passages.")
+    await _check_quota(x_client_id, "copilot")
+    run_id = uuid.uuid4()
+    async with pool().connection() as conn:
+        await conn.execute(
+            "INSERT INTO agent_runs (id, question, client_id, kind) VALUES (%s, %s, %s, 'copilot')",
+            (run_id, f"[matrix] {body.title or pid}"[:500], x_client_id),
+        )
+    status, error = "done", None
+    try:
+        passages = [{"page": x.page, "text": x.text, "title": body.title} for x in body.passages] or None
+        return await matrix.extract_row(Deps(llm=llm, tools=LiveTools()), fulltext, pid, body.title, passages)
+    except AgentError as e:
+        status, error = "failed", str(e)[:500]
+        raise HTTPException(502, str(e)) from None
+    finally:
+        async with pool().connection() as conn:
+            await conn.execute(
+                """UPDATE agent_runs SET status=%s, error=%s, input_tokens=%s, output_tokens=%s, finished_at=now()
+                   WHERE id=%s""",
+                (status, error, llm.usage.input_tokens, llm.usage.output_tokens, run_id),
+            )
 
 
 # ---------- Agent runs (LLM cost, rate-limited) ----------

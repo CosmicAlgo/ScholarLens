@@ -15,6 +15,7 @@ from collections import OrderedDict
 
 import httpx
 
+from .config import get_settings
 from .db import pool
 from .embeddings import embed_documents, embed_query, to_pgvector
 from .openalex import OpenAlexError, _cached_get
@@ -23,8 +24,9 @@ log = logging.getLogger("scholarlens.fulltext")
 
 MAX_PDF_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 60
+SOURCES_VERSION = "v2"  # bump when PDF sources change, so papers marked "no PDF" are retried
 PASSAGE_CHARS = 900
-_CACHE_BYTES = 16 * 1024 * 1024  # small: the API runs on 512 MB
+_CACHE_BYTES = 96 * 1024 * 1024
 _UA = "ScholarLens/0.2 (research reader; +https://rstackhub.in)"
 
 _pdf_cache: OrderedDict[str, bytes] = OrderedDict()
@@ -40,12 +42,16 @@ class NoPdf(Exception):
 # ---------------------------------------------------------------- locating and fetching
 
 
-async def pdf_candidates(paper_id: str) -> list[tuple[str, str | None]]:
-    """Open-access PDF URLs for a work, best first, as (url, license)."""
+async def _work(paper_id: str) -> dict:
     try:
-        w = await _cached_get(f"/works/{paper_id}", {"select": "id,best_oa_location,locations"})
+        return await _cached_get(f"/works/{paper_id}", {"select": "id,doi,title,best_oa_location,locations"})
     except OpenAlexError:
-        return []
+        return {}
+
+
+async def pdf_candidates(paper_id: str) -> list[tuple[str, str | None]]:
+    """Open-access PDF URLs that OpenAlex lists for a work, best first, as (url, license)."""
+    w = await _work(paper_id)
     out: list[tuple[str, str | None]] = []
     best = w.get("best_oa_location") or {}
     if best.get("pdf_url"):
@@ -55,6 +61,89 @@ async def pdf_candidates(paper_id: str) -> list[tuple[str, str | None]]:
             out.append((loc["pdf_url"], loc.get("license")))
     # arXiv copies are the most reliably fetchable; try them first.
     out.sort(key=lambda c: 0 if "arxiv.org" in c[0] else 1)
+    return out
+
+
+# ---- extra free sources, asked only when OpenAlex's own links fail
+
+
+async def _json(url: str, params: dict | None = None) -> dict | None:
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": _UA}) as c:
+            r = await c.get(url, params=params)
+        return r.json() if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+async def _unpaywall(doi: str) -> list[tuple[str, str | None]]:
+    email = get_settings().openalex_email
+    if not email:
+        return []
+    d = await _json(f"https://api.unpaywall.org/v2/{doi}", {"email": email}) or {}
+    return [(loc["url_for_pdf"], loc.get("license")) for loc in d.get("oa_locations") or [] if loc.get("url_for_pdf")]
+
+
+async def _semantic_scholar(doi: str) -> list[tuple[str, str | None]]:
+    d = (
+        await _json(
+            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}", {"fields": "openAccessPdf,externalIds"}
+        )
+        or {}
+    )
+    out: list[tuple[str, str | None]] = []
+    ext = d.get("externalIds") or {}
+    if ext.get("ArXiv"):
+        out.append((f"https://arxiv.org/pdf/{ext['ArXiv']}", None))
+    if ext.get("PubMedCentral"):
+        pmc = str(ext["PubMedCentral"]).removeprefix("PMC")
+        out.append((f"https://europepmc.org/backend/ptpmcrender.fcgi?accid=PMC{pmc}&blobtype=pdf", None))
+    pdf = d.get("openAccessPdf") or {}
+    if pdf.get("url"):
+        out.append((pdf["url"], pdf.get("license")))
+    return out
+
+
+def _norm_title(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
+
+
+async def _arxiv_by_title(title: str) -> list[tuple[str, str | None]]:
+    """arXiv preprint with exactly the same title (many published papers have one)."""
+    if len(title) < 15:
+        return []
+    q = re.sub(r"[^\w\s-]", " ", title)[:200]
+    try:
+        async with httpx.AsyncClient(timeout=12, headers={"User-Agent": _UA}) as c:
+            r = await c.get(
+                "https://export.arxiv.org/api/query", params={"search_query": f'ti:"{q}"', "max_results": 3}
+            )
+    except httpx.HTTPError:
+        return []
+    if r.status_code != 200:
+        return []
+    out: list[tuple[str, str | None]] = []
+    for entry in re.findall(r"<entry>(.*?)</entry>", r.text, re.S):
+        t = re.search(r"<title>(.*?)</title>", entry, re.S)
+        i = re.search(r"<id>https?://arxiv.org/abs/(.*?)</id>", entry)
+        if t and i and _norm_title(t.group(1)) == _norm_title(title):
+            out.append((f"https://arxiv.org/pdf/{i.group(1)}", None))
+    return out
+
+
+async def extra_candidates(paper_id: str) -> list[tuple[str, str | None]]:
+    """Unpaywall, Semantic Scholar (arXiv / PubMed Central / OA PDF) and an arXiv title match."""
+    w = await _work(paper_id)
+    doi = (w.get("doi") or "").removeprefix("https://doi.org/")
+    tasks = [_arxiv_by_title(w.get("title") or "")]
+    if doi:
+        tasks += [_unpaywall(doi), _semantic_scholar(doi)]
+    found = await asyncio.gather(*tasks, return_exceptions=True)
+    out: list[tuple[str, str | None]] = []
+    for group in found:
+        if isinstance(group, list):
+            out += [c for c in group if c[0] not in {u for u, _ in out}]
+    out.sort(key=lambda c: 0 if "arxiv.org" in c[0] else 1 if "europepmc" in c[0] else 2)
     return out
 
 
@@ -81,18 +170,22 @@ def _remember(paper_id: str, data: bytes) -> None:
 
 
 async def get_pdf(paper_id: str) -> tuple[bytes, str, str | None]:
-    """(pdf bytes, source url, license). Raises NoPdf."""
+    """(pdf bytes, source url, license). Tries OpenAlex's links, then the extra sources. Raises NoPdf."""
     if paper_id in _pdf_cache:
         _pdf_cache.move_to_end(paper_id)
         return _pdf_cache[paper_id], "", None
-    errors = []
-    for url, lic in (await pdf_candidates(paper_id))[:4]:
-        try:
-            data = await _download(url)
-            _remember(paper_id, data)
-            return data, url, lic
-        except (NoPdf, httpx.HTTPError) as e:
-            errors.append(f"{url.split('/')[2]}: {e}")
+    errors, tried = [], set()
+    for finder in (pdf_candidates, extra_candidates):
+        for url, lic in (await finder(paper_id))[:5]:
+            if url in tried:
+                continue
+            tried.add(url)
+            try:
+                data = await _download(url)
+                _remember(paper_id, data)
+                return data, url, lic
+            except (NoPdf, httpx.HTTPError) as e:
+                errors.append(f"{url.split('/')[2]}: {e}")
     raise NoPdf("; ".join(errors) or "no open-access PDF listed")
 
 
@@ -137,7 +230,7 @@ async def ensure_fulltext(paper_id: str) -> dict:
     """
     async with pool().connection() as conn:
         row = await (
-            await conn.execute("SELECT status, pages FROM paper_files WHERE paper_id = %s", (paper_id,))
+            await conn.execute("SELECT status, pages, error FROM paper_files WHERE paper_id = %s", (paper_id,))
         ).fetchone()
         if row and row["status"] == "ready":
             counts = await (
@@ -150,7 +243,7 @@ async def ensure_fulltext(paper_id: str) -> dict:
             if counts["pending"]:
                 _schedule_embedding(paper_id)  # resume after a restart
             return {"status": "ready", "pages": row["pages"], "passages": counts["n"]}
-        if row and row["status"] == "no_pdf":
+        if row and row["status"] == "no_pdf" and (row["error"] or "").startswith(SOURCES_VERSION):
             return {"status": "no_pdf", "pages": None, "passages": 0}
 
     lock = _locks.setdefault(paper_id, asyncio.Lock())
@@ -162,7 +255,7 @@ async def ensure_fulltext(paper_id: str) -> dict:
             if not passages:
                 raise NoPdf("no extractable text (scanned PDF?)")
         except NoPdf as e:
-            await _record(paper_id, "no_pdf", None, None, None, str(e)[:300])
+            await _record(paper_id, "no_pdf", None, None, None, f"{SOURCES_VERSION} {e}"[:300])
             return {"status": "no_pdf", "pages": None, "passages": 0}
         except Exception as e:  # malformed PDFs etc.: record and move on
             log.warning("fulltext failed for %s: %r", paper_id, e)
@@ -281,3 +374,47 @@ async def search_passages(paper_ids: list[str], query: str, k: int = 6) -> list[
                 )
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- user-supplied documents
+
+_WORD = re.compile(r"[a-z][a-z0-9-]{2,}")
+_STOP = set(
+    "the and for with that this from are was were has have had not but its their which into than then also can our".split()
+)
+
+
+def _stem(w: str) -> str:
+    for suf in ("ing", "ed", "es", "s"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            return w[: -len(suf)]
+    return w
+
+
+def _terms(text: str) -> list[str]:
+    return [_stem(w) for w in _WORD.findall(text.lower()) if w not in _STOP]
+
+
+def rank_passages(passages: list[dict], query: str, k: int = 6) -> list[int]:
+    """BM25 over passages the browser sent (uploaded PDFs are never stored on the server).
+    Returns indexes into `passages`, best first; the opening passages if nothing matches."""
+    import math
+
+    q = set(_terms(query))
+    docs = [_terms(p["text"]) for p in passages]
+    if not docs:
+        return []
+    n = len(docs)
+    avg = (sum(map(len, docs)) / n) or 1
+    df = {t: sum(1 for d in docs if t in d) for t in q}
+    scored = []
+    for i, d in enumerate(docs):
+        score = 0.0
+        for t in q:
+            tf = d.count(t)
+            if tf:
+                idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
+                score += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * len(d) / avg))
+        scored.append((score, i))
+    best = [i for score, i in sorted(scored, key=lambda x: -x[0]) if score > 0][:k]
+    return best or list(range(min(k, n)))

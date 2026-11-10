@@ -28,7 +28,7 @@ from .deps import Deps
 from .evidence import paper_evidence, trend_evidence
 from .llm import LLM
 
-Mode = Literal["ask", "explain", "critique", "brainstorm", "related", "compare"]
+Mode = Literal["ask", "explain", "critique", "brainstorm", "related", "compare", "verify"]
 MAX_JOBS = 5
 MAX_PARALLEL = 4
 
@@ -61,6 +61,12 @@ Rules:
 - If papers are open and the question is about them, read them (one job per paper, max 3).
 - Use search_literature for related work, comparisons, gaps, or when no paper is open.
 - Use topic_trend only when momentum or popularity of a field matters.
+- If the user highlighted a passage, the question is about it: read that paper with a query built from
+  the highlighted text, and search the literature for it when the user wants related, supporting or
+  contradicting work.
+- brainstorm: read the open papers for limitations and future work, and search the literature for what
+  has already been done, so ideas are new.
+- verify: search the literature for the claim (2 different phrasings) and read open papers for it.
 - 1 to 5 jobs. Queries name the subject only, no words like "research" or "trends"."""
 
 MODE_RULES = {
@@ -69,13 +75,20 @@ MODE_RULES = {
     "how it works, and the results. Define jargon briefly.",
     "critique": "Act as a careful peer reviewer: strengths, weaknesses, assumptions, threats to validity, "
     "and what evidence would change your mind. Be specific and fair.",
-    "brainstorm": "Propose concrete research or build ideas. For each idea give: the idea, why it is "
-    "promising (cite the gap or finding it builds on), and a first experiment. Mark ideas as ideas, "
-    "not facts.",
+    "brainstorm": "Propose 3-5 concrete, non-obvious research or build ideas. Each must start from a specific "
+    "limitation, gap or surprising result in the evidence (cite it). For each give a '### ' heading with the "
+    "idea's name, then: **Builds on** (the cited gap), **Why it is new** (how it differs from the closest "
+    "cited work; avoid ideas the evidence shows are already done), **First experiment** (data, baseline, "
+    "metric, roughly a week of work) and **Risk** (the likeliest reason it fails). Prefer specific, testable "
+    "ideas over broad themes. Mark ideas as ideas, not facts.",
     "related": "Map the related work: group the papers into themes, say how each relates to the open "
     "paper or question, and point out what is missing.",
     "compare": "Compare the papers or approaches side by side: goals, methods, data, results, limits. "
     "A compact markdown table is welcome.",
+    "verify": "Check the user's claim against the evidence. Start with a one-line verdict in bold: "
+    "**Supported**, **Contradicted**, **Mixed** or **Not enough evidence**. Then list the evidence for and "
+    "against, each with its citation, and note the strength of each source (preprint, retracted, citations, "
+    "how directly it tests the claim). Do not guess beyond the evidence.",
 }
 
 WRITER = """You are ScholarLens Copilot, a research assistant for scholars. Write in markdown.
@@ -98,6 +111,7 @@ class CopilotState(TypedDict, total=False):
     mode: str
     history: str
     open_papers: list[dict]
+    selection: dict | None
     jobs: list[dict]
     job: dict
     evidence: Annotated[list[dict], operator.add]
@@ -109,17 +123,29 @@ def _open_list(state: CopilotState) -> str:
     return "\n".join(f"- {p['id']}: {p['title']}" for p in papers) or "(none)"
 
 
-def build_dispatcher(deps: Deps, fulltext=None):
-    """Graph: master → parallel workers (LangGraph Send) → END. `fulltext` is injectable for tests."""
+def _selection_text(state: CopilotState) -> str:
+    sel = state.get("selection")
+    if not sel:
+        return ""
+    return f'\nThe user highlighted this on page {sel["page"]} of {sel["paper_id"]}:\n"""{sel["text"][:1500]}"""\n'
+
+
+def build_dispatcher(deps: Deps, fulltext=None, documents: dict[str, list[dict]] | None = None):
+    """Graph: master → parallel workers (LangGraph Send) → END. `fulltext` is injectable for tests.
+
+    `documents` holds passages of PDFs the user uploaded (kept in their browser, sent per request),
+    keyed by the paper id they are shown under."""
     from .. import fulltext as live_fulltext
 
     ft = fulltext or live_fulltext
+    docs = documents or {}
     sem = asyncio.Semaphore(MAX_PARALLEL)
 
     async def master(state: CopilotState):
         prompt = (
             f"Mode: {state.get('mode', 'ask')}\nOpen papers:\n{_open_list(state)}\n\n"
-            f"Recent conversation:\n{state.get('history') or '(none)'}\n\nUser: {state['message']}"
+            f"Recent conversation:\n{state.get('history') or '(none)'}\n{_selection_text(state)}\n"
+            f"User: {state['message']}"
         )
         plan = await deps.llm.structured(tier="fast", system=MASTER, prompt=prompt, schema=Dispatch)
         open_ids = {p["id"] for p in state.get("open_papers") or []}
@@ -139,7 +165,7 @@ def build_dispatcher(deps: Deps, fulltext=None):
         job = state["job"]
         async with sem:
             try:
-                ev = await _run_job(job, deps, ft)
+                ev = await _run_job(job, deps, ft, docs)
                 status, note = "done", f"{len(ev)} items"
             except Exception as e:  # one failed worker must not sink the answer
                 ev, status, note = [], "failed", type(e).__name__
@@ -154,10 +180,12 @@ def build_dispatcher(deps: Deps, fulltext=None):
     return g.compile()
 
 
-async def _run_job(job: dict, deps: Deps, ft) -> list[dict]:
+async def _run_job(job: dict, deps: Deps, ft, docs: dict[str, list[dict]] | None = None) -> list[dict]:
     kind, q = job["kind"], job["query"]
     if kind == "read_paper":
         pid = job["target"]
+        if docs and pid in docs:  # a PDF the user brought: rank its passages here, nothing is stored
+            return doc_passages(pid, docs[pid], q, 5)
         status = await ft.ensure_fulltext(pid)
         if status["status"] == "ready":
             rows = await ft.search_passages([pid], q, k=5)
@@ -204,10 +232,45 @@ async def _run_job(job: dict, deps: Deps, ft) -> list[dict]:
     return []
 
 
+def doc_passages(pid: str, passages: list[dict], query: str, k: int) -> list[dict]:
+    from ..fulltext import rank_passages
+
+    title = passages[0].get("title") or "Uploaded document" if passages else ""
+    return [
+        {
+            "id": f"S:{pid}:{i}",
+            "kind": "passage",
+            "paper_id": pid,
+            "title": title,
+            "page": passages[i]["page"],
+            "text": passages[i]["text"],
+        }
+        for i in rank_passages(passages, query, k)
+    ]
+
+
+def selection_evidence(sel: dict | None, titles: dict[str, str]) -> list[dict]:
+    if not sel:
+        return []
+    pid = sel["paper_id"]
+    return [
+        {
+            "id": f"H:{pid}:{sel['page']}",
+            "kind": "highlight",
+            "paper_id": pid,
+            "title": titles.get(pid, pid),
+            "page": sel["page"],
+            "text": sel["text"][:3000],
+        }
+    ]
+
+
 def ledger_text(evidence: list[dict]) -> str:
     lines = []
     for e in evidence:
-        if e["kind"] == "passage":
+        if e["kind"] == "highlight":
+            lines.append(f'[{e["id"]}] passage the USER HIGHLIGHTED, page {e["page"]} of "{e["title"]}": {e["text"]}')
+        elif e["kind"] == "passage":
             lines.append(f'[{e["id"]}] passage, page {e["page"]} of "{e["title"]}": {e["text"]}')
         elif e["kind"] == "paper":
             flags = f" FLAGS: {', '.join(e['flags'])}." if e.get("flags") else ""
@@ -230,7 +293,7 @@ def dedupe_evidence(evidence: list[dict]) -> list[dict]:
     return out
 
 
-_CITE = re.compile(r"\[((?:[SPMC]):[^\]\s]+)\]")
+_CITE = re.compile(r"\[((?:[SPMCH]):[^\]\s]+)\]")
 
 
 def verify_answer(answer: str, evidence: list[dict]) -> dict:
@@ -253,6 +316,10 @@ def verify_answer(answer: str, evidence: list[dict]) -> dict:
 
 async def write_answer(llm: LLM, *, message: str, mode: str, history: str, evidence: list[dict]):
     system = WRITER.format(mode_rule=MODE_RULES.get(mode, MODE_RULES["ask"]))
+    if any(e["kind"] == "highlight" for e in evidence):
+        system += (
+            "\nThe user highlighted a passage (its id starts with H:). Focus on it and cite it when you discuss it."
+        )
     prompt = (
         f"Evidence ledger:\n{ledger_text(evidence) or '(empty: say that no evidence was found)'}\n\n"
         f"Recent conversation:\n{history or '(none)'}\n\nUser: {message}"
