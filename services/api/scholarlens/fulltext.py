@@ -380,7 +380,8 @@ async def search_passages(paper_ids: list[str], query: str, k: int = 6) -> list[
 
 _WORD = re.compile(r"[a-z][a-z0-9-]{2,}")
 _STOP = set(
-    "the and for with that this from are was were has have had not but its their which into than then also can our".split()
+    "the and for with that this from are was were has have had not but its their which into than then also can"
+    "our".split()
 )
 
 
