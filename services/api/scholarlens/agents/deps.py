@@ -15,6 +15,8 @@ class Tools(Protocol):
     async def search(self, query: str, limit: int, year_from: int | None) -> list[PaperHit]: ...
     async def ensure_coverage(self, query: str, year_from: int | None) -> int: ...
     async def paper(self, paper_id: str) -> dict | None: ...
+    async def prior_work(self, query: str, limit: int) -> list[PaperHit]: ...
+    async def keep(self, papers: list[PaperHit]) -> None: ...
 
 
 class LiveTools:
@@ -31,6 +33,36 @@ class LiveTools:
 
     async def paper(self, paper_id: str) -> dict | None:
         return await get_paper(paper_id)
+
+    async def prior_work(self, query: str, limit: int) -> list[PaperHit]:
+        """Most relevant works across all of OpenAlex (not just our index), straight from its search."""
+        self._found = getattr(self, "_found", {})
+        out = []
+        for p in (await ingest.fetch_relevant(query, n=max(limit, 10)))[:limit]:
+            self._found[p["id"]] = p
+            out.append(
+                PaperHit(
+                    id=p["id"],
+                    title=p["title"],
+                    year=p["year"],
+                    venue=p["venue"],
+                    doi=p["doi"],
+                    abstract=p["abstract"],
+                    cited_by_count=p["cited_by_count"],
+                    is_retracted=p["is_retracted"],
+                    is_preprint=p["is_preprint"],
+                    is_oa=p["is_oa"],
+                    oa_url=p["oa_url"],
+                    score=0.0,
+                    authors=[a["name"] if isinstance(a, dict) else a for a in p.get("authors") or []],
+                )
+            )
+        return out
+
+    async def keep(self, papers: list[PaperHit]) -> None:
+        """Add works found by prior_work to our index, so the reader can open them."""
+        found = getattr(self, "_found", {})
+        await ingest.store([found[p.id] for p in papers if p.id in found])
 
 
 @dataclass

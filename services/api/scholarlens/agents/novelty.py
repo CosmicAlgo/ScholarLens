@@ -2,7 +2,7 @@
 
 LLMs happily propose ideas that already exist. After a brainstorm answer we:
   1. pull the ideas out of the answer (fast LLM, structured),
-  2. search the literature for each idea, in parallel, topping up the local index from OpenAlex,
+  2. search all of OpenAlex (250M+ works) for each idea, in parallel,
   3. ask a reviewer (fast LLM) to compare each idea with the closest papers we actually found.
 
 The verdict always comes with the papers it is based on, so the user can check it.
@@ -58,11 +58,7 @@ async def check_ideas(deps: Deps, answer: str) -> list[dict]:
         return []
 
     async def prior_work(idea: Idea):
-        try:
-            await asyncio.wait_for(deps.tools.ensure_coverage(idea.search_query, None), timeout=20)
-        except Exception:  # coverage is best-effort; search what we have
-            pass
-        return await deps.tools.search(idea.search_query, CANDIDATES, None)
+        return await deps.tools.prior_work(idea.search_query, CANDIDATES)
 
     found = await asyncio.gather(*(prior_work(i) for i in ideas), return_exceptions=True)
     hits = [f if isinstance(f, list) else [] for f in found]
@@ -93,4 +89,9 @@ async def check_ideas(deps: Deps, answer: str) -> list[dict]:
                 ],
             }
         )
+    try:  # make the closest papers openable in the reader
+        shown = {c["id"] for o in out for c in o["closest"]}
+        await deps.tools.keep([h for hs in hits for h in hs if h.id in shown])
+    except Exception:
+        pass
     return out

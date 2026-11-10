@@ -61,12 +61,16 @@ class ScriptedLLM:
         return schema.model_validate(self.answers[schema])
 
 
-class CoverageTools(FakeTools):
-    covered: list[str] = []
+class PriorWorkTools(FakeTools):
+    def __init__(self):
+        self.queries, self.kept = [], []
 
-    async def ensure_coverage(self, query, year_from):
-        self.covered.append(query)
-        return 0
+    async def prior_work(self, query, limit):
+        self.queries.append(query)
+        return (await self.search(query, limit, None))[:limit]
+
+    async def keep(self, papers):
+        self.kept += [p.id for p in papers]
 
 
 async def test_novelty_check_judges_ideas_against_papers_it_actually_found():
@@ -86,12 +90,13 @@ async def test_novelty_check_judges_ideas_against_papers_it_actually_found():
             },
         }
     )
-    tools = CoverageTools()
+    tools = PriorWorkTools()
     out = await check_ideas(Deps(llm=llm, tools=tools), "### Graph RAG for law\n...\n### Tiny RAG\n...")
     assert [o["verdict"] for o in out] == ["already_done", "open"]
     assert [c["id"] for c in out[0]["closest"]] == ["W2"]  # invented id dropped
     assert len(out[1]["closest"]) == 2  # nearest papers shown even when the idea looks open
-    assert len(tools.covered) == 2  # index topped up for each idea
+    assert len(tools.queries) == 2  # one literature search per idea
+    assert set(tools.kept) == {c["id"] for o in out for c in o["closest"]}  # shown papers become openable
     assert "Candidates:" in llm.prompts[1]
 
 
