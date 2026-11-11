@@ -10,6 +10,7 @@ Providers:
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from pydantic import BaseModel, ValidationError
 from ..config import Settings
 
 T = TypeVar("T", bound=BaseModel)
+log = logging.getLogger("scholarlens")
 Tier = Literal["fast", "strong"]
 
 # Anthropic models that support the server-side refusal fallback ("default" form).
@@ -136,6 +138,14 @@ class GeminiLLM:
         media: list[Media] | None = None,
         effort: str | None = None,
     ) -> T:
+        if tier == "strong":
+            # The free-tier strong model can queue for minutes. Give it one bounded try, then let the
+            # fast model do the job rather than leave the user waiting.
+            try:
+                return await self._once("strong", system, prompt, schema, media, effort, first=STRONG_FIRST_TIMEOUT)
+            except _Transient as e:
+                log.warning("strong model unavailable (%s); using the fast model", e)
+                tier = "fast"
         last: AgentError | None = None
         for attempt in range(_GEMINI_ATTEMPTS):
             try:
@@ -147,8 +157,16 @@ class GeminiLLM:
         raise AgentError(str(last)) from last.__cause__
 
     async def _once(
-        self, tier: Tier, system: str, prompt: str, schema: type[T], media: list[Media] | None, effort_override=None
+        self,
+        tier: Tier,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        media: list[Media] | None,
+        effort_override=None,
+        first: float = 0.0,
     ) -> T:
+        first = first or FIRST_EVENT_TIMEOUT
         model, effort = self._model(tier)
         effort = effort_override or effort
         # Streamed: long generations (the writer) exceed the ~60 s idle limit of a plain request.
@@ -169,9 +187,9 @@ class GeminiLLM:
                         "schema": schema.model_json_schema(),
                     },
                 ),
-                FIRST_EVENT_TIMEOUT,
+                first,
             )
-            async for ev in _paced(stream, FIRST_EVENT_TIMEOUT, IDLE_TIMEOUT):
+            async for ev in _paced(stream, first, IDLE_TIMEOUT):
                 kind = getattr(ev, "event_type", None)
                 if kind == "step.delta" and type(ev.delta).__name__ == "TextDelta":
                     parts.append(ev.delta.text or "")
@@ -273,6 +291,7 @@ class GeminiLLM:
 
 
 FIRST_EVENT_TIMEOUT = 75.0  # seconds before the provider must send anything at all
+STRONG_FIRST_TIMEOUT = 45.0  # the strong model gets this long to start before the fast model takes over
 IDLE_TIMEOUT = 60.0  # seconds allowed between two streamed events
 
 

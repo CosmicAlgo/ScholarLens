@@ -20,6 +20,7 @@ export function Library({
   onUnqueue,
   onScreened,
   notify,
+  initialQuery,
 }: {
   state: WorkspaceState;
   onOpen: (p: Paper) => void;
@@ -30,6 +31,7 @@ export function Library({
   onUnqueue: (id: string) => void;
   onScreened: (kept: number, total: number, seconds: number) => void;
   notify: (text: string, tone: "info" | "bad") => void;
+  initialQuery?: string | null;
 }) {
   const restoreInput = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<"search" | "notes">("search");
@@ -44,6 +46,16 @@ export function Library({
   const [screening, setScreening] = useState(false);
   const [err, setErr] = useState("");
   const run = useRef(0);
+  useEffect(() => {
+    if (!initialQuery) return;
+    const t = setTimeout(() => {
+      setQ(initialQuery);
+      setTab("search");
+      search(undefined, initialQuery);
+    }, 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialQuery]);
   const [suggestions, setSuggestions] = useState(["retrieval augmented generation", "CRISPR base editing", "microplastics", "perovskite stability"]);
   useEffect(() => {
     fetchTrending()
@@ -230,15 +242,19 @@ export function Library({
 
         {state.recent.length > 0 && (
           <Section title="Recently read">
-            {state.recent.slice(0, 12).map((r) => (
-              <button
-                key={r.id}
-                onClick={() => onActivate(r.id)}
-                className="w-full text-left px-4 py-1.5 text-xs text-ink-3 hover:text-ink hover:bg-surface-2 line-clamp-1"
-              >
-                {r.title}
-              </button>
-            ))}
+            {state.recent
+              .filter((r, i, all) => all.findIndex((x) => x.title.toLowerCase() === r.title.toLowerCase()) === i)
+              .slice(0, 12)
+              .map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => onActivate(r.id)}
+                  title={r.title}
+                  className="w-full text-left px-4 py-1.5 text-xs leading-snug text-ink-2 hover:text-ink hover:bg-surface-2"
+                >
+                  <span className="line-clamp-2">{r.title}</span>
+                </button>
+              ))}
           </Section>
         )}
 

@@ -3,19 +3,24 @@ import { Suspense } from "react";
 import { AskClient } from "./ask-client";
 
 export const metadata: Metadata = {
-  title: "Ask: AI research briefings with citations",
-  description: "Ask about a research field and get a briefing where every claim cites a paper or a computed number.",
+  title: "Briefings: cited research reports",
+  description:
+    "Ask about a research field and get a briefing from seven agents: computed trends, key papers, emerging sub-areas and trust checks. Every claim cites a source.",
 };
 
 type Props = { searchParams: Promise<{ q?: string }> };
 
 export default function AskPage({ searchParams }: Props) {
   return (
-    <div className="mx-auto max-w-4xl px-4 py-8">
-      <h1 className="text-3xl font-semibold tracking-tight">Ask about a research field</h1>
-      <p className="mt-2 text-ink-2">
-        Seven single-purpose agents research your question. Every claim in the briefing cites a source, or it is removed.
-      </p>
+    <div className="mx-auto max-w-5xl px-4">
+      <section className="pt-12 pb-6 md:pt-16 max-w-3xl">
+        <p className="text-sm font-medium text-accent-ink">Briefings</p>
+        <h1 className="mt-2 text-3xl md:text-5xl font-semibold tracking-tight leading-[1.08]">A cited briefing on any research field</h1>
+        <p className="mt-4 text-ink-2 text-lg">
+          Seven agents work through your question: they compute the trend, find the papers that matter, map the sub-areas,
+          check for retractions, write, and then delete every claim that lacks a source.
+        </p>
+      </section>
       <Suspense fallback={null}>
         <WithQuery searchParams={searchParams} />
       </Suspense>

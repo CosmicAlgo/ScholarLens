@@ -70,6 +70,22 @@ export function WorkspaceClient() {
   const sRef = useRef(s);
   sRef.current = s;
 
+  // Links from other pages: /workspace?q=topic searches the library, ?open=W1,W2 opens papers.
+  const [initialQuery, setInitialQuery] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get("q");
+    const open = (params.get("open") || "").split(",").filter((x) => /^W\d+$/.test(x)).slice(0, 5);
+    if (!q && !open.length) return;
+    window.history.replaceState(null, "", "/workspace");
+    if (q) {
+      setPane("library");
+      setInitialQuery(q.slice(0, 200));
+    }
+    open.forEach((id) => openById(id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(null), notice.tone === "bad" ? 7000 : 5000);
@@ -263,6 +279,7 @@ export function WorkspaceClient() {
       onKeep={(p) => setS((c) => (c.queue.some((x) => x.id === p.id) ? c : { ...c, queue: [pick(p), ...c.queue].slice(0, 100) }))}
       onUnqueue={(id) => setS((c) => ({ ...c, queue: c.queue.filter((x) => x.id !== id) }))}
       notify={(text, tone) => setNotice({ text, tone })}
+      initialQuery={initialQuery}
       onScreened={(kept, total, seconds) => {
         track("screened", { kept, total, seconds });
         if (kept) setNotice({ text: `${kept} of ${total} papers added to your reading list.`, tone: "info" });

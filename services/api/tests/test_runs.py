@@ -89,3 +89,26 @@ async def test_a_silent_stream_times_out_instead_of_hanging():
     with pytest.raises(AgentError):
         async for _ in _paced(silent(), 0.05, 0.05):
             pass
+
+
+async def test_structured_strong_calls_fall_back_to_the_fast_model():
+    from pydantic import BaseModel
+
+    from scholarlens.agents.llm import GeminiLLM, _Transient
+    from scholarlens.config import Settings
+
+    class Out(BaseModel):
+        ok: bool
+
+    llm = GeminiLLM(Settings(), client=object())
+    calls = []
+
+    async def fake_once(tier, system, prompt, schema, media, effort=None, first=0.0):
+        calls.append(tier)
+        if tier == "strong":
+            raise _Transient("The AI model took too long to respond.")
+        return Out(ok=True)
+
+    llm._once = fake_once
+    out = await llm.structured(tier="strong", system="s", prompt="p", schema=Out)
+    assert out.ok and calls == ["strong", "fast"]
