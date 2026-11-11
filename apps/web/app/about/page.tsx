@@ -81,6 +81,24 @@ export default function About() {
         </ul>
       </section>
 
+      <section id="film">
+        <h2 className="text-xl font-semibold">Paper Film and Researchers</h2>
+        <ul className="mt-2 list-disc pl-5 text-ink-2 space-y-1">
+          <li>
+            <strong>Paper Film</strong>: reader agents read the whole paper in parts and take notes that cite passages; a
+            director agent turns them into scenes. Code then cuts any line without a source or with a number the cited
+            passage does not contain, and any quote, key number or figure that is not in the paper. Figures are the
+            paper&rsquo;s own, cropped around their printed captions. Narration uses your browser&rsquo;s voice.
+          </li>
+          <li>
+            <strong>Researchers</strong>: profiles, topics, collaborators and the &ldquo;still open&rdquo; quotes come straight
+            from OpenAlex, with no AI. The optional brief reads the abstracts of their recent papers; every statement must cite one
+            of them, and numbers must appear in the cited abstract. OpenAlex sometimes splits one person into several
+            records, so check the institution and topics before relying on a profile.
+          </li>
+        </ul>
+      </section>
+
       <section id="limits">
         <h2 className="text-xl font-semibold">Limits</h2>
         <ul className="mt-2 list-disc pl-5 text-ink-2 space-y-1">

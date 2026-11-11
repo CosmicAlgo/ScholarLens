@@ -20,8 +20,21 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import citegraph, claims, fulltext, lineage, openalex, refcheck, runs, s2, smart_search, trending
-from .agents import copilot, figures, matrix, novelty
+from . import (
+    authors,
+    citegraph,
+    claims,
+    fulltext,
+    ingest,
+    lineage,
+    openalex,
+    refcheck,
+    runs,
+    s2,
+    smart_search,
+    trending,
+)
+from .agents import author_brief, copilot, figures, film, matrix, novelty
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
 from .agents.llm import AgentError, make_llm
@@ -134,6 +147,8 @@ async def paper(paper_id: str):
     if not paper_id.startswith("W") or not paper_id[1:].isdigit():
         raise HTTPException(404)
     row = await get_paper(paper_id)
+    if not row and await ingest.ensure_paper(paper_id):  # linked from a profile or tool, not indexed yet
+        row = await get_paper(paper_id)
     if not row:
         raise HTTPException(404)
     return row
@@ -477,6 +492,91 @@ async def citation_telephone(body: ClaimRequest, x_client_id: str = Header(defau
         f"[telephone] {body.paper_id} {body.claim}",
         lambda llm: claims.telephone(llm, body.paper_id, body.claim),
     )
+
+
+# ---------- Paper Film ----------
+
+
+class FilmRequest(BaseModel):
+    paper_id: str = Field(max_length=20)
+    title: str = Field("", max_length=400)
+    passages: list[Passage] = Field(default_factory=list, max_length=600)
+
+
+async def _paper_passages(pid: str) -> list[dict]:
+    async with pool().connection() as conn:
+        rows = await (
+            await conn.execute("SELECT idx, page, text FROM paper_chunks WHERE paper_id = %s ORDER BY idx", (pid,))
+        ).fetchall()
+    return [{"id": f"S:{pid}:{r['idx']}", "page": r["page"], "text": r["text"]} for r in rows]
+
+
+@app.post("/api/film")
+async def paper_film(body: FilmRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    """A narrated scene-by-scene explainer of one paper, written from its full text. Every line cites
+    the passage it comes from; lines and visuals that fail the checks are cut and listed."""
+    pid = _valid_doc_id(body.paper_id)
+    if pid.startswith("U"):
+        if not body.passages:
+            raise HTTPException(422, "Uploaded documents need their passages.")
+        passages = [{"id": f"S:{pid}:{i}", "page": x.page, "text": x.text} for i, x in enumerate(body.passages)]
+        key = _result_key("film", pid, str(len(passages)), passages[0]["text"][:200])
+    else:
+        if not await ingest.ensure_paper(pid):
+            raise HTTPException(404, "Paper not found.")
+        if (await fulltext.ensure_fulltext(pid))["status"] != "ready":
+            raise HTTPException(
+                409, "The full text of this paper is not openly available. Upload its PDF to make a film of it."
+            )
+        passages = await _paper_passages(pid)
+        key = _result_key("film", pid)
+    if sum(len(p["text"]) for p in passages) < 3000:
+        raise HTTPException(422, "There is too little text in this paper to make a film.")
+    title = body.title.strip() or "this paper"
+    return await _cached_tool(key, x_client_id, f"[film] {pid}", lambda llm: film.make_film(llm, title, passages))
+
+
+# ---------- Researcher profiles ----------
+
+
+@app.get("/api/authors")
+async def author_search(q: str = Query(..., min_length=2, max_length=120)):
+    try:
+        return {"results": await authors.search(q)}
+    except openalex.OpenAlexError as e:
+        raise HTTPException(502, "OpenAlex is unavailable right now.") from e
+
+
+@app.get("/api/authors/{author_id}")
+async def author_profile(author_id: str):
+    try:
+        out = await authors.profile(author_id)
+    except openalex.OpenAlexError as e:
+        raise HTTPException(502, "OpenAlex is unavailable right now.") from e
+    if out is None:
+        raise HTTPException(404, "Researcher not found.")
+    return out
+
+
+class BriefRequest(BaseModel):
+    idea: str = Field("", max_length=2000)
+
+
+@app.post("/api/authors/{author_id}/brief")
+async def author_brief_endpoint(
+    author_id: str, body: BriefRequest, x_client_id: str = Header(default="anonymous", max_length=64)
+):
+    """What a researcher works on now and, given the user's idea, where it fits. Every statement cites one
+    of their recent papers."""
+    prof = await authors.profile(author_id)
+    if prof is None:
+        raise HTTPException(404, "Researcher not found.")
+    key = _result_key("brief", author_id, body.idea.strip().lower())
+
+    async def job(llm):
+        return await author_brief.brief(llm, prof["name"], prof["recent"], body.idea)
+
+    return await _cached_tool(key, x_client_id, f"[brief] {author_id}", job)
 
 
 # ---------- Agent runs (LLM cost, rate-limited) ----------

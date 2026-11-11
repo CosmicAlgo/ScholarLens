@@ -196,3 +196,19 @@ async def ensure_coverage(query: str, year_from: int | None = None) -> int:
     if added:
         log.info("stored %d new papers for %r", added, query)
     return added
+
+
+async def ensure_paper(paper_id: str) -> bool:
+    """Make sure one catalogue paper is stored (for links to papers we have not indexed yet)."""
+    async with pool().connection() as conn:
+        if await (await conn.execute("SELECT 1 FROM papers WHERE id = %s", (paper_id,))).fetchone():
+            return True
+    try:
+        w = await _cached_get(f"/works/{paper_id}", {"select": _SELECT})
+    except OpenAlexError:
+        return False
+    p = normalise(w) if w and w.get("id") else None
+    if not p:
+        return False
+    await store([p])
+    return True

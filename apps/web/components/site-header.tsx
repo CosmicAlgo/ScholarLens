@@ -13,6 +13,7 @@ const NAV = [
   { href: "/compare", label: "Compare", hint: "Topics side by side" },
   { href: "/ask", label: "Briefings", hint: "A cited report on a question" },
   { href: "/verify", label: "Verify", hint: "Check citations, claims and numbers" },
+  { href: "/people", label: "Researchers", hint: "What a professor works on now" },
   { href: "/about", label: "How it works", hint: "Method, trust and privacy" },
 ];
 

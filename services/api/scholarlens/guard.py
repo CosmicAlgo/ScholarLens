@@ -30,6 +30,7 @@ AI_PATHS = (
     "/api/refcheck",
     "/api/court",
     "/api/telephone",
+    "/api/film",
 )
 
 _minute: dict[str, deque] = defaultdict(deque)
@@ -45,6 +46,8 @@ def is_ai_call(request: Request) -> bool:
     if request.method != "POST":
         return False
     p = request.url.path
+    if p.startswith("/api/authors/") and p.endswith("/brief"):
+        return True
     return p.startswith(AI_PATHS) and not p.endswith("/cancel")
 
 

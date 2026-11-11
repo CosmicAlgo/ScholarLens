@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getDoc } from "@/lib/docstore";
 import type { FigureItem, Highlight, OpenPaper } from "@/lib/workspace";
 import { pdfUrl } from "@/lib/workspace";
+import { FilmView } from "./film";
 import type { Jump, PdfSelection, SelAction } from "./pdf-view";
 
 const PdfView = dynamic(() => import("./pdf-view"), {
@@ -147,7 +148,8 @@ function PaperView({
 }) {
   const [local, setLocal] = useState<ArrayBuffer | null>(null);
   const [missing, setMissing] = useState(false);
-  const [view, setView] = useState<"pdf" | "abstract">("pdf");
+  const [view, setView] = useState<"pdf" | "abstract" | "film">("pdf");
+  const [filmJump, setFilmJump] = useState<Jump>(null);
   const [guide, setGuide] = useState(false);
   const figs = figures.items[p.id];
   const figStatus = figures.status[p.id];
@@ -169,6 +171,9 @@ function PaperView({
   const localSource = useMemo(() => (local ? { data: new Uint8Array(local.slice(0)) } : null), [local]);
   const file = p.local ? localSource : p.fulltext === "ready" ? pdfUrl(p.id) : null;
   const showPdf = view === "pdf" && file !== null;
+  const showFilm = view === "film";
+  // Whichever jump is newer wins: a citation from Copilot or a page link from the film.
+  const pdfJump = filmJump && (!jump || filmJump.nonce > jump.nonce) ? filmJump : jump;
   const doi = p.doi ? (p.doi.startsWith("http") ? p.doi : `https://doi.org/${p.doi}`) : null;
 
   return (
@@ -203,6 +208,16 @@ function PaperView({
               ))}
             </div>
           )}
+          <button
+            onClick={() => setView(showFilm ? "pdf" : "film")}
+            aria-pressed={showFilm}
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-0.5 ${
+              showFilm ? "border-accent bg-accent text-white" : "border-accent/40 text-accent-ink hover:bg-accent-soft"
+            }`}
+            title="Paper Film: a narrated explainer made from this paper's own text"
+          >
+            ▶ Film
+          </button>
           {doi && (
             <a href={doi} target="_blank" rel="noreferrer" className="text-ink-3 hover:text-ink underline">
               DOI
@@ -212,11 +227,20 @@ function PaperView({
       </header>
 
       <div className="flex-1 min-h-0 bg-surface-2 relative">
-        {showPdf ? (
+        {showFilm ? (
+          <FilmView
+            p={p}
+            file={file}
+            onCite={(page, text) => {
+              setFilmJump({ page, text, nonce: Date.now() });
+              setView("pdf");
+            }}
+          />
+        ) : showPdf ? (
           <PdfView
             file={file}
             highlights={highlights}
-            jump={jump}
+            jump={pdfJump}
             onAction={onAction}
             sourceUrl={p.local ? null : p.oa_url || doi}
             extra={
