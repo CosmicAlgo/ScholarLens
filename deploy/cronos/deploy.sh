@@ -2,8 +2,12 @@
 # Run on the VM: pull the latest v2 and rebuild/restart the API. Usage: /opt/scholarlens/repo/deploy/cronos/deploy.sh
 set -euo pipefail
 cd /opt/scholarlens/repo
-git fetch --quiet origin v2
-git checkout --quiet --detach origin/v2   # deploy checkout only; never edit files here
+if [ "${1:-}" != "--pulled" ]; then
+  git fetch --quiet origin v2
+  git checkout --quiet --detach origin/v2   # deploy checkout only; never edit files here
+  # Run the freshly pulled copy of this script, so changes to deploy steps apply in the same run.
+  exec bash deploy/cronos/deploy.sh --pulled
+fi
 cd deploy/cronos
 sudo docker compose up -d --build
 # The Caddyfile is bind-mounted; a changed file needs a restart of the proxy to take effect.
