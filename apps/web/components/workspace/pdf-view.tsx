@@ -8,7 +8,7 @@ import { cropCanvas } from "@/lib/docstore";
 import "@/lib/pdfjs";
 import type { Highlight, Rect } from "@/lib/workspace";
 
-export type SelAction = "ask" | "explain" | "verify" | "related" | "highlight";
+export type SelAction = "ask" | "explain" | "verify" | "related" | "highlight" | "court" | "telephone";
 /** `image` (base64 JPEG) is set when the user cut out a figure instead of selecting text. */
 export type PdfSelection = { page: number; text: string; rects: Rect[]; image?: string };
 export type Jump = { page: number; text?: string; nonce: number } | null;
@@ -397,6 +397,10 @@ export default function PdfView({
           <SelBtn onClick={() => act("explain")} label="Explain" hint={sel.image ? "Explain this figure" : "Explain in plain language"} />
           {!sel.image && <SelBtn onClick={() => act("verify")} label="Verify" hint="Check this claim against the literature" />}
           <SelBtn onClick={() => act("related")} label="Related" hint="Find related work" />
+          {!sel.image && <SelBtn onClick={() => act("court")} label="⚖ Court" hint="Claim Court: which papers support or dispute this?" />}
+          {!sel.image && /\d/.test(sel.text) && (
+            <SelBtn onClick={() => act("telephone")} label="☎ Trace" hint="Citation Telephone: did this number change as others repeated it?" />
+          )}
           {sel.image && <SelBtn onClick={() => setSel(null)} label="✕" hint="Cancel" />}
           <span className="w-px h-5 bg-line mx-0.5" />
           {(Object.keys(COLORS) as Highlight["color"][]).map((c) => (

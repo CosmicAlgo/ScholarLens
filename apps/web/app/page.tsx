@@ -77,7 +77,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="grid md:grid-cols-2 gap-4 pb-20">
+      <section className="grid md:grid-cols-3 gap-4 pb-20">
         <Link href="/trends" className="block rounded-2xl border border-line bg-surface p-6 hover:border-ink-3">
           <h2 className="font-semibold text-lg">Trends →</h2>
           <p className="mt-2 text-sm text-ink-2 leading-relaxed">
@@ -89,6 +89,13 @@ export default function Home() {
           <h2 className="font-semibold text-lg">Briefings →</h2>
           <p className="mt-2 text-sm text-ink-2 leading-relaxed">
             Ask a question about a field and get a cited report: momentum, key papers, emerging sub-areas and trust flags.
+          </p>
+        </Link>
+        <Link href="/verify" className="block rounded-2xl border border-line bg-surface p-6 hover:border-ink-3">
+          <h2 className="font-semibold text-lg">Verify →</h2>
+          <p className="mt-2 text-sm text-ink-2 leading-relaxed">
+            Catch fabricated or retracted references, see which papers support or dispute a claim, and follow a famous
+            number to see where it changed.
           </p>
         </Link>
       </section>

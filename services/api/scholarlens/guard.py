@@ -22,7 +22,15 @@ from .config import get_settings
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 # Endpoints that call the LLM (smart search counts too; it may call it once per new query).
-AI_PATHS = ("/api/copilot", "/api/extract", "/api/figures", "/api/runs")
+AI_PATHS = (
+    "/api/copilot",
+    "/api/extract",
+    "/api/figures",
+    "/api/runs",
+    "/api/refcheck",
+    "/api/court",
+    "/api/telephone",
+)
 
 _minute: dict[str, deque] = defaultdict(deque)
 _daily: dict[str, int] = defaultdict(int)

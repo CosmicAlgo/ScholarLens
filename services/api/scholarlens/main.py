@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import citegraph, fulltext, lineage, openalex, runs, smart_search, trending
+from . import citegraph, claims, fulltext, lineage, openalex, refcheck, runs, s2, smart_search, trending
 from .agents import copilot, figures, matrix, novelty
 from .agents.deps import Deps, LiveTools
 from .agents.graph import build_graph
@@ -66,22 +66,37 @@ def _year_range(year_from: int | None) -> tuple[int, int]:
 
 
 @app.get("/api/trend")
-async def trend(q: str = Query(..., min_length=2, max_length=200), year_from: int | None = None):
+async def trend(
+    q: str = Query(..., min_length=2, max_length=200),
+    year_from: int | None = None,
+    sense: str = Query("auto", pattern=r"^(auto|all|\d{1,4})$"),
+):
+    """`sense`: which meaning of the name to count. "auto" follows the field that uses the name now
+    when that changed over time (e.g. "transformers"); "all" counts every field; a number is an
+    OpenAlex field id."""
     y0, y1 = _year_range(year_from)
     try:
-        result = await LiveTools().trend(q, y0, y1)
+        result = await LiveTools().trend(q, y0, y1, sense)
     except openalex.OpenAlexError as e:
         raise HTTPException(502, "Upstream data source is unavailable; try again shortly.") from e
     return {"query": q, **result.to_dict()}
 
 
 @app.get("/api/compare")
-async def compare(q: list[str] = Query(..., max_length=4), year_from: int | None = None):
+async def compare(
+    q: list[str] = Query(..., max_length=4),
+    year_from: int | None = None,
+    sense: list[str] = Query([], max_length=4),
+):
+    """`sense` is matched to `q` by position (auto when missing)."""
     out = []
-    for topic in q[:4]:
+    for i, topic in enumerate(q[:4]):
         if not 2 <= len(topic) <= 200:
             raise HTTPException(422, "each topic must be 2-200 characters")
-        out.append(await trend(topic, year_from))
+        s = sense[i] if i < len(sense) else "auto"
+        if s != "auto" and s != "all" and not (s.isdigit() and len(s) <= 4):
+            s = "auto"
+        out.append(await trend(topic, year_from, s))
     return {"topics": out}
 
 
@@ -372,6 +387,96 @@ async def extract(body: ExtractRequest, x_client_id: str = Header(default="anony
                    WHERE id=%s""",
                 (status, error, llm.usage.input_tokens, llm.usage.output_tokens, run_id),
             )
+
+
+# ---------- Verification tools: Citation Check, Claim Court, Citation Telephone ----------
+
+
+class RefCheckRequest(BaseModel):
+    text: str = Field(min_length=20, max_length=200_000)
+
+
+class ClaimRequest(BaseModel):
+    paper_id: str = Field(pattern=r"^(W\d{3,12}|10\.\d{4,9}/\S{1,200})$", description="OpenAlex id or DOI")
+    claim: str = Field("", max_length=600)
+
+
+async def _logged_ai(x_client_id: str, label: str, job):
+    """Run one AI tool call with the Copilot quota, usage logging and a cache of finished results."""
+    llm = make_llm(get_settings())
+    if llm is None:
+        raise HTTPException(503, "AI is not enabled on this server yet.")
+    await _check_quota(x_client_id, "copilot")
+    run_id = uuid.uuid4()
+    async with pool().connection() as conn:
+        await conn.execute(
+            "INSERT INTO agent_runs (id, question, client_id, kind) VALUES (%s, %s, %s, 'copilot')",
+            (run_id, label[:500], x_client_id),
+        )
+    status, error = "done", None
+    try:
+        return await job(llm)
+    except (AgentError, s2.S2Error) as e:
+        status, error = "failed", str(e)[:500]
+        raise HTTPException(502, str(e)) from None
+    except claims.SourceNotFound as e:
+        status, error = "failed", str(e)
+        raise HTTPException(404, str(e)) from None
+    finally:
+        async with pool().connection() as conn:
+            await conn.execute(
+                """UPDATE agent_runs SET status=%s, error=%s, input_tokens=%s, output_tokens=%s, finished_at=now()
+                   WHERE id=%s""",
+                (status, error, llm.usage.input_tokens, llm.usage.output_tokens, run_id),
+            )
+
+
+def _result_key(kind: str, *parts: str) -> str:
+    import hashlib
+
+    return f"{kind}:" + hashlib.sha256("".join(parts).encode()).hexdigest()[:32]
+
+
+async def _cached_tool(key: str, x_client_id: str, label: str, job) -> dict:
+    if (hit := await openalex.cache_get(key, 24)) is not None:
+        return {**hit, "cached": True}
+    out = await _logged_ai(x_client_id, label, job)
+    await openalex.cache_put(key, out)
+    return out
+
+
+@app.post("/api/refcheck")
+async def ref_check(body: RefCheckRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    """Check a reference list (or a draft with one): do the papers exist, are the details right, were they
+    retracted, and do the abstracts back the sentences that cite them?"""
+    key = _result_key("refcheck", body.text)
+    return await _cached_tool(key, x_client_id, "[refcheck]", lambda llm: refcheck.check(llm, body.text))
+
+
+@app.post("/api/court")
+async def claim_court(body: ClaimRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    """How citing papers treat a claim: supporting, disputing or mentioning, with their own sentences."""
+    key = _result_key("court", body.paper_id, body.claim.strip().lower())
+    return await _cached_tool(
+        key,
+        x_client_id,
+        f"[court] {body.paper_id} {body.claim}",
+        lambda llm: claims.court(llm, body.paper_id, body.claim),
+    )
+
+
+@app.post("/api/telephone")
+async def citation_telephone(body: ClaimRequest, x_client_id: str = Header(default="anonymous", max_length=64)):
+    """Follow a finding through two generations of citing papers and show where its numbers changed."""
+    if len(body.claim.strip()) < 8:
+        raise HTTPException(422, "Give the finding to follow, e.g. a sentence with a number from the abstract.")
+    key = _result_key("telephone", body.paper_id, body.claim.strip().lower())
+    return await _cached_tool(
+        key,
+        x_client_id,
+        f"[telephone] {body.paper_id} {body.claim}",
+        lambda llm: claims.telephone(llm, body.paper_id, body.claim),
+    )
 
 
 # ---------- Agent runs (LLM cost, rate-limited) ----------

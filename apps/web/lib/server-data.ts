@@ -16,10 +16,10 @@ export async function getSearch(q: string, limit = 12) {
   return fetchSearch(q, limit);
 }
 
-export async function getCompare(topics: string[]) {
+export async function getCompare(topics: string[], senses: string[] = []) {
   "use cache";
   cacheLife("hours");
-  return fetchCompare(topics);
+  return fetchCompare(topics, senses);
 }
 
 export async function getPaper(id: string) {

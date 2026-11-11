@@ -20,10 +20,15 @@ class Tools(Protocol):
 
 
 class LiveTools:
-    async def trend(self, query: str, year_from: int, year_to: int) -> TrendResult:
+    async def trend(self, query: str, year_from: int, year_to: int, sense: str = "auto") -> TrendResult:
+        from .. import senses
+
+        meaning = await senses.resolve(query, year_from, year_to, sense)
         baseline = await openalex.counts_by_year(None, year_from, year_to)
-        counts = await openalex.counts_by_year(query, year_from, year_to)
-        return compute_trend(counts, baseline, current_year=date.today().year)
+        counts = await openalex.counts_by_year(query, year_from, year_to, field=meaning["field"])
+        result = compute_trend(counts, baseline, current_year=date.today().year)
+        result.sense = meaning
+        return result
 
     async def search(self, query: str, limit: int, year_from: int | None) -> list[PaperHit]:
         return await search_papers(query, limit=limit, year_from=year_from)

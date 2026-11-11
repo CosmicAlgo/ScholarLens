@@ -12,6 +12,7 @@ const NAV = [
   { href: "/trends", label: "Trends", hint: "Where a field is heading" },
   { href: "/compare", label: "Compare", hint: "Topics side by side" },
   { href: "/ask", label: "Briefings", hint: "A cited report on a question" },
+  { href: "/verify", label: "Verify", hint: "Check citations, claims and numbers" },
   { href: "/about", label: "How it works", hint: "Method, trust and privacy" },
 ];
 

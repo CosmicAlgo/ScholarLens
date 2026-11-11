@@ -35,6 +35,7 @@ class TrendResult:
     total_papers: int
     peak_year: int | None
     points: list[YearPoint] = field(default_factory=list)
+    sense: dict | None = None  # which meaning of the name was counted (see senses.py)
 
     def to_dict(self) -> dict:
         return asdict(self)

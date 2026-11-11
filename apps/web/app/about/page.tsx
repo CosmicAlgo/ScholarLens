@@ -56,6 +56,31 @@ export default function About() {
         </p>
       </section>
 
+      <section id="verify">
+        <h2 className="text-xl font-semibold">How Verify decides</h2>
+        <ul className="mt-2 list-disc pl-5 text-ink-2 space-y-1">
+          <li>
+            <strong>Citation Check</strong> looks each reference up by DOI and title in OpenAlex, then Semantic Scholar. Title,
+            year and first author are compared in code, and retractions come from OpenAlex. An AI agent only splits the list
+            into entries, and every title it returns must appear in your text.
+          </li>
+          <li>
+            <strong>Claim Court</strong> reads the sentences in which other papers cite the source (from Semantic Scholar).
+            An AI agent labels each one as supporting, disputing or mentioning, and must quote the words that justify the
+            label. Labels whose quote is not in the sentence are downgraded. The verdict is counted, not written.
+          </li>
+          <li>
+            <strong>Citation Telephone</strong> follows a finding through two generations of citing sentences. The agent only
+            picks the retellings and copies their words; numbers are compared in code (kept, rounded within 3%, changed or
+            dropped).
+          </li>
+          <li>
+            Topic trends follow the meaning a name has now when it has changed: early &ldquo;transformers&rdquo; papers were
+            mostly power engineering, recent ones mostly computer science. Compare lets you switch fields.
+          </li>
+        </ul>
+      </section>
+
       <section id="limits">
         <h2 className="text-xl font-semibold">Limits</h2>
         <ul className="mt-2 list-disc pl-5 text-ink-2 space-y-1">

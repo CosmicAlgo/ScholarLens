@@ -22,6 +22,16 @@ export type Trend = {
   total_papers: number;
   peak_year: number | null;
   points: YearPoint[];
+  sense?: Sense | null;
+};
+
+/** Which meaning of a topic name was counted: OpenAlex field of each paper's primary topic. */
+export type Sense = {
+  field: string | null;
+  name: string;
+  auto: boolean;
+  note: string;
+  options: { id: string; name: string; share: number }[];
 };
 
 export type Paper = {
@@ -117,8 +127,10 @@ async function get<T>(path: string): Promise<T> {
 
 export const fetchTrend = (q: string) => get<Trend>(`/api/trend?q=${encodeURIComponent(q)}`);
 
-export const fetchCompare = (topics: string[]) =>
-  get<{ topics: Trend[] }>(`/api/compare?${topics.map((t) => `q=${encodeURIComponent(t)}`).join("&")}`);
+export const fetchCompare = (topics: string[], senses: string[] = []) =>
+  get<{ topics: Trend[] }>(
+    `/api/compare?${topics.map((t, i) => `q=${encodeURIComponent(t)}&sense=${encodeURIComponent(senses[i] || "auto")}`).join("&")}`,
+  );
 
 export type Interpretation = { corrected: string; searches: string[]; note: string };
 export const fetchSearch = (q: string, limit = 20, smart = false) =>

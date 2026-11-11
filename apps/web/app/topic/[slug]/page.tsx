@@ -57,6 +57,14 @@ async function TrendSection({ params }: Props) {
         <TrendBadge label={trend.label} />
       </div>
       <p className="mt-2 text-ink-2">{info.blurb}</p>
+      {trend.sense?.note && (
+        <p className="mt-3 max-w-3xl rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-ink-2">
+          {trend.sense.note}{" "}
+          <Link href={`/compare?q=${encodeURIComponent(topic)}&s=all`} className="text-accent-ink underline underline-offset-2">
+            Count all fields instead
+          </Link>
+        </p>
+      )}
       <div className="mt-6">
         <TrendStats t={trend} />
       </div>

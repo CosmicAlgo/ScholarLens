@@ -22,7 +22,7 @@ WORK = {
         {"author": {"id": "https://openalex.org/A1", "display_name": "Ada dup"}},
         {"author": {"id": "https://openalex.org/A2", "display_name": "Bo"}, "institutions": []},
     ],
-    "abstract_inverted_index": {"hello": [0], "world": [1, 3], "again": [2]},
+    "abstract_inverted_index": {"study": [0], "world": [1, 3], "again": [2]},
 }
 
 
@@ -35,11 +35,17 @@ def test_normalise_matches_harvester_rules():
     p = normalise(WORK)
     assert p["id"] == "W123" and p["doi"] == "10.1/abc" and p["title"] == "A study"
     assert p["is_preprint"] is True and p["venue"] == "arXiv"
-    assert p["abstract"] == "hello world again world"
+    assert p["abstract"] == "study world again world"
     assert p["topic"]["id"] == "T1" and p["topic"]["field"] == "CS"
     assert [a["id"] for a in p["authors"]] == ["A1", "A2"]
     assert p["authors"][0]["orcid"] == "0000-1" and p["authors"][0]["institution"] == "Uni"
     assert p["authors"][1]["position"] == 2
+
+
+def test_normalise_drops_an_abstract_that_belongs_to_another_paper():
+    wrong = {"we": [0], "impute": [1], "methylation": [2], "data": [3]}
+    p = normalise({**WORK, "title": "Denoising diffusion probabilistic models", "abstract_inverted_index": wrong})
+    assert p["abstract"] is None
 
 
 def test_normalise_skips_untitled():

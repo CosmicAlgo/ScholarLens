@@ -85,6 +85,12 @@ async function PaperBody({ params }: Props) {
         >
           OpenAlex record
         </a>
+        <a href={`/verify?tool=court&paper=${p.id}`} className="rounded-lg border border-line bg-surface px-3 py-2 hover:border-ink-3">
+          ⚖ Claim Court: who agrees?
+        </a>
+        <a href={`/verify?tool=telephone&paper=${p.id}`} className="rounded-lg border border-line bg-surface px-3 py-2 hover:border-ink-3">
+          ☎ Trace a number
+        </a>
       </div>
     </article>
   );

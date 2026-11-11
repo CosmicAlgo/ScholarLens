@@ -41,6 +41,14 @@ def reconstruct_abstract(inv: dict[str, list[int]] | None) -> str:
     return " ".join(w for _, w in words)
 
 
+def _abstract_for(w: dict, title: str) -> str | None:
+    """OpenAlex occasionally attaches another paper's abstract to a record. Better none than wrong."""
+    from .textmatch import plausible_abstract
+
+    text = reconstruct_abstract(w.get("abstract_inverted_index"))
+    return text if text and plausible_abstract(text, title) else None
+
+
 def normalise(w: dict) -> dict | None:
     title = (w.get("title") or "").strip()
     if not title or not w.get("id"):
@@ -86,7 +94,7 @@ def normalise(w: dict) -> dict | None:
         "id": _short(w["id"]),
         "doi": (w.get("doi") or "").removeprefix("https://doi.org/") or None,
         "title": title,
-        "abstract": reconstruct_abstract(w.get("abstract_inverted_index")) or None,
+        "abstract": _abstract_for(w, title),
         "year": w.get("publication_year"),
         "publication_date": pub_date,
         "work_type": w.get("type"),

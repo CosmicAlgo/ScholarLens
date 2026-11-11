@@ -189,6 +189,13 @@ export function WorkspaceClient() {
       const h: Highlight = { id: crypto.randomUUID(), paper_id: p.id, title: p.title, page: sel.page, text, rects: sel.rects, color: color || "yellow", at: Date.now() };
       return setS((c) => ({ ...c, highlights: [...c.highlights, h] }));
     }
+    if (a === "court" || a === "telephone") {
+      if (!/^W\d+$/.test(p.id))
+        return setNotice({ text: "Claim Court and Citation Telephone work on catalogue papers, not uploaded PDFs.", tone: "info" });
+      const url = `/verify?tool=${a}&paper=${p.id}&claim=${encodeURIComponent(sel.text.replace(/\s+/g, " ").trim().slice(0, 500))}`;
+      window.open(url, "_blank", "noopener");
+      return;
+    }
     if (a === "ask") {
       setPending({ ...selection, title: p.title });
       setPane("copilot");

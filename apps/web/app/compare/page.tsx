@@ -14,7 +14,7 @@ export const metadata: Metadata = {
     "Put up to four research topics on one scale: share of all papers over time, momentum, crossovers and peaks, computed from OpenAlex.",
 };
 
-type Props = { searchParams: Promise<{ q?: string | string[] }> };
+type Props = { searchParams: Promise<{ q?: string | string[]; s?: string | string[] }> };
 
 const COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
 const PRESETS: [string, string[]][] = [
@@ -31,7 +31,18 @@ const parse = (q: string | string[] | undefined) =>
     .filter((t) => t.length >= 2 && t.length <= 200)
     .slice(0, 4);
 
-const href = (topics: string[]) => `/compare?${topics.map((t) => `q=${encodeURIComponent(t)}`).join("&")}`;
+const SENSE = /^(auto|all|\d{1,4})$/;
+const parseSenses = (s: string | string[] | undefined, n: number) => {
+  const raw = Array.isArray(s) ? s : s ? [s] : [];
+  return Array.from({ length: n }, (_, i) => (SENSE.test(raw[i] || "") ? raw[i] : "auto"));
+};
+
+/** Senses travel as s=... in the same order as q=...; left out when every topic is on auto. */
+const href = (topics: string[], senses: string[] = []) => {
+  const qs = topics.map((t) => `q=${encodeURIComponent(t)}`);
+  if (senses.some((x) => x && x !== "auto")) qs.push(...topics.map((_, i) => `s=${senses[i] || "auto"}`));
+  return `/compare?${qs.join("&")}`;
+};
 
 export default function ComparePage({ searchParams }: Props) {
   return (
@@ -52,7 +63,9 @@ export default function ComparePage({ searchParams }: Props) {
 }
 
 async function CompareBody({ searchParams }: Props) {
-  const topics = parse((await searchParams).q);
+  const sp = await searchParams;
+  const topics = parse(sp.q);
+  const senses = parseSenses(sp.s, topics.length);
   const slots = [...topics, "", "", "", ""].slice(0, 4);
   return (
     <>
@@ -88,7 +101,7 @@ async function CompareBody({ searchParams }: Props) {
         </div>
       </form>
       {topics.length > 0 ? (
-        <Results topics={topics} />
+        <Results topics={topics} senses={senses} />
       ) : (
         <p className="mt-6 pb-20 text-sm text-ink-3">Pick a preset above, or type two to four topics.</p>
       )}
@@ -96,10 +109,10 @@ async function CompareBody({ searchParams }: Props) {
   );
 }
 
-async function Results({ topics }: { topics: string[] }) {
+async function Results({ topics, senses }: { topics: string[]; senses: string[] }) {
   let data;
   try {
-    data = await getCompare(topics);
+    data = await getCompare(topics, senses);
   } catch (e) {
     return (
       <div className="mt-6">
@@ -144,7 +157,13 @@ async function Results({ topics }: { topics: string[] }) {
         <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-3">Topic by topic</h2>
         <div className="mt-3 grid sm:grid-cols-2 gap-3">
           {data.topics.map((t, i) => (
-            <TopicCard key={t.query} t={t} color={COLORS[i]} />
+            <TopicCard
+              key={t.query}
+              t={t}
+              color={COLORS[i]}
+              current={senses[i]}
+              senseHref={(v) => href(topics, senses.map((x, j) => (j === i ? v : x)))}
+            />
           ))}
         </div>
       </section>
@@ -152,7 +171,17 @@ async function Results({ topics }: { topics: string[] }) {
   );
 }
 
-function TopicCard({ t, color }: { t: Trend; color: string }) {
+function TopicCard({
+  t,
+  color,
+  current,
+  senseHref,
+}: {
+  t: Trend;
+  color: string;
+  current: string;
+  senseHref: (sense: string) => string;
+}) {
   const pts = t.points.filter((p) => !p.partial);
   const last = pts.at(-1);
   return (
@@ -175,6 +204,7 @@ function TopicCard({ t, color }: { t: Trend; color: string }) {
         ))}
       </dl>
       <p className="mt-2 text-xs text-ink-3">{t.total_papers.toLocaleString("en-GB")} papers in the window</p>
+      {t.sense && <SenseChooser sense={t.sense} current={current} senseHref={senseHref} />}
       <div className="mt-3 flex flex-wrap gap-2 text-xs">
         <Link href={`/topic/${topicSlug(t.query)}`} className="rounded-lg border border-line px-2.5 h-7 inline-flex items-center hover:border-ink-3">
           Full trend and key papers
@@ -185,6 +215,40 @@ function TopicCard({ t, color }: { t: Trend; color: string }) {
         >
           Read papers in the workspace →
         </Link>
+      </div>
+    </div>
+  );
+}
+
+/** Which meaning of the name was counted, and the other fields that use it. */
+function SenseChooser({ sense, current, senseHref }: { sense: NonNullable<Trend["sense"]>; current: string; senseHref: (s: string) => string }) {
+  const chip = (value: string, label: string, on: boolean, title?: string) => (
+    <Link
+      key={value}
+      href={senseHref(value)}
+      scroll={false}
+      title={title}
+      aria-current={on ? "true" : undefined}
+      className={`rounded-full border px-2 py-0.5 text-[0.68rem] ${
+        on ? "border-accent bg-accent-soft text-accent-ink font-medium" : "border-line text-ink-3 hover:text-ink hover:border-ink-3"
+      }`}
+    >
+      {label}
+    </Link>
+  );
+  const chosen = sense.field ?? "all";
+  return (
+    <div className="mt-3 rounded-xl bg-surface-2 p-2.5">
+      {sense.note && <p className="text-xs text-ink-2 leading-relaxed mb-2">{sense.note}</p>}
+      <p className="text-[0.62rem] uppercase tracking-wider text-ink-3 mb-1.5">
+        Counting papers in {sense.field ? sense.name : "all fields"}
+        {current === "auto" && sense.auto ? " (chosen automatically)" : ""}
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {chip("all", "All fields", chosen === "all")}
+        {sense.options.map((o) =>
+          chip(o.id, `${o.name} ${Math.round(o.share * 100)}%`, chosen === o.id, `Share of recent papers using this name that are in ${o.name}`),
+        )}
       </div>
     </div>
   );

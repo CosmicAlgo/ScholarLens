@@ -62,7 +62,14 @@ def _sanitise(query: str) -> str:
     return " ".join("".join(c if c not in ",|:" else " " for c in query).split())
 
 
-async def counts_by_year(query: str | None, year_from: int, year_to: int) -> dict[int, int]:
+def search_term(query: str) -> str:
+    """Two- and three-word concept names are matched as a phrase ("diffusion models" must appear
+    together); longer questions are matched on all their words."""
+    clean = _sanitise(query).replace('"', "")
+    return f'"{clean}"' if 2 <= len(clean.split()) <= 3 else clean
+
+
+async def counts_by_year(query: str | None, year_from: int, year_to: int, field: str | None = None) -> dict[int, int]:
     """Research papers per publication year matching `query` in title/abstract (None = all papers).
 
     Both the topic and the baseline are restricted to articles/preprints/reviews with an abstract.
@@ -71,7 +78,9 @@ async def counts_by_year(query: str | None, year_from: int, year_to: int) -> dic
     """
     filters = [f"publication_year:{year_from}-{year_to}", PAPER_FILTER]
     if query:
-        filters.append(f"title_and_abstract.search:{_sanitise(query)}")
+        filters.append(f"title_and_abstract.search:{search_term(query)}")
+    if field:
+        filters.append(f"primary_topic.field.id:{field}")
     payload = await _cached_get("/works", {"filter": ",".join(filters), "group_by": "publication_year"})
     out: dict[int, int] = {}
     for group in payload.get("group_by", []):
