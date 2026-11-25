@@ -75,7 +75,7 @@ def _rate_ok(ip: str) -> bool:
 
 class GuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.method == "OPTIONS" or request.url.path == "/health":
+        if request.method == "OPTIONS" or request.url.path.startswith("/health"):
             return await call_next(request)
         ip = client_ip(request)
         if not _rate_ok(ip):

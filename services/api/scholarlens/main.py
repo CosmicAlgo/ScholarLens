@@ -65,6 +65,14 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
+    """Liveness only. Docker calls this every 30 seconds, so it must not touch the database: a query
+    every 30 seconds keeps Neon's compute awake around the clock and uses up the monthly allowance."""
+    return {"ok": True}
+
+
+@app.get("/health/db")
+async def health_db():
+    """Database check, for occasional manual use."""
     async with pool().connection() as conn:
         n = (await (await conn.execute("SELECT count(*) AS n FROM papers")).fetchone())["n"]
     return {"ok": True, "papers": n}
