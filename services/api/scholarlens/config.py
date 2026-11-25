@@ -43,7 +43,8 @@ class Settings(BaseSettings):
 
     # Abuse guardrails (per IP; see guard.py). AI_PAUSED=true switches every AI feature off.
     ai_paused: bool = False
-    ai_calls_per_ip_per_day: int = 80
+    # Many users can share one public IP (university Wi-Fi), so keep this well above one person's use.
+    ai_calls_per_ip_per_day: int = 300
     requests_per_ip_per_minute: int = 120
     smart_searches_per_ip_per_day: int = 300
 

@@ -16,6 +16,8 @@ services:
       # 4 real cores here (the image defaults to 1 thread for tiny PaaS quotas).
       EMBEDDING_THREADS: "2"
       OMP_NUM_THREADS: "2"
+      # Campus Wi-Fi puts many users behind one IP; the global daily budgets still cap total cost.
+      AI_CALLS_PER_IP_PER_DAY: "300"
     mem_limit: 6g
     expose:
       - "8000"
