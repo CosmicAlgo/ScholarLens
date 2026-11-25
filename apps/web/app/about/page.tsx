@@ -45,7 +45,7 @@ export default function About() {
       </section>
 
       <section id="agents">
-        <h2 className="text-xl font-semibold">The agents behind Ask</h2>
+        <h2 className="text-xl font-semibold">The agents behind Briefings</h2>
         <p className="mt-2 text-ink-2">
           A <strong>Planner</strong> turns your question into topics. In parallel, a <strong>Trend Analyst</strong>{" "}
           explains the computed trend numbers, while a <strong>Scout</strong> retrieves papers, a{" "}
@@ -122,7 +122,7 @@ export default function About() {
             personal or confidential information.
           </li>
           <li>
-            PDFs you upload stay in your browser (IndexedDB). They are never stored on our servers. When you ask Copilot,
+            PDFs you upload stay in your browser (IndexedDB). They are never stored on our servers. When you ask Copilot (the AI panel in the Workspace),
             only the passages it needs (and any figure you cut out) are sent to answer that one question.
           </li>
           <li>

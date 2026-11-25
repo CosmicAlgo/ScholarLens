@@ -8,5 +8,17 @@ export const metadata: Metadata = {
 };
 
 export default function WorkspacePage() {
-  return <WorkspaceClient />;
+  return (
+    <>
+      {/* Server-rendered so search engines, link previews and no-JS readers see what this page is. */}
+      <div className="sr-only">
+        <h1>Research workspace</h1>
+        <p>
+          Open papers from OpenAlex or upload your own PDFs, read them side by side, and ask Copilot, the AI panel in
+          this workspace. Every answer cites the exact page it came from. Uploaded PDFs stay in your browser.
+        </p>
+      </div>
+      <WorkspaceClient />
+    </>
+  );
 }
