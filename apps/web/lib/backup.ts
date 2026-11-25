@@ -6,7 +6,7 @@
 
 import { allDocs, putDoc, type StoredDoc } from "./docstore";
 import { getWS, setWS } from "./store";
-import { download, type WorkspaceState } from "./workspace";
+import { download, mergeWorkspace, type WorkspaceState } from "./workspace";
 
 const toB64 = (buf: ArrayBuffer) => {
   let s = "";
@@ -31,23 +31,12 @@ export async function exportWorkspace() {
   return { papers: state.papers.length, pdfs: docs.length };
 }
 
-const byId = <T extends { id: string }>(a: T[], b: T[]) => [...a, ...b.filter((x) => !a.some((y) => y.id === x.id))];
-
 export async function importWorkspace(f: File): Promise<{ papers: number; pdfs: number }> {
   const raw = JSON.parse(await f.text());
   if (raw?.app !== "scholarlens" || !raw.state) throw new Error("That file is not a ScholarLens backup.");
   const docs = (raw.docs || []) as (Omit<StoredDoc, "data"> & { data: string })[];
   for (const d of docs) await putDoc({ ...d, data: fromB64(d.data) });
   const inc = raw.state as WorkspaceState;
-  setWS((c) => ({
-    ...c,
-    papers: byId(c.papers, inc.papers || []).slice(-5),
-    highlights: byId(c.highlights, inc.highlights || []),
-    queue: byId(c.queue, inc.queue || []),
-    recent: byId(c.recent, inc.recent || []).slice(0, 30),
-    matrix: { ...(inc.matrix || {}), ...c.matrix },
-    figures: { ...(inc.figures || {}), ...c.figures },
-    messages: c.messages.length ? c.messages : (inc.messages || []).map((m) => (m.role === "assistant" ? { ...m, done: true } : m)),
-  }));
+  setWS((c) => mergeWorkspace(c, inc));
   return { papers: (inc.papers || []).length, pdfs: docs.length };
 }

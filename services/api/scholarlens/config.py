@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     ai_calls_per_ip_per_day: int = 300
     requests_per_ip_per_minute: int = 120
     smart_searches_per_ip_per_day: int = 300
+    # Signed-in users are counted on their own instead of by network.
+    ai_calls_per_user_per_day: int = 150
+
+    # Optional accounts (Neon Auth). The branch's Auth URL; empty turns accounts off.
+    neon_auth_url: str = ""
 
     cors_origins: list[str] = ["http://localhost:3000"]
 

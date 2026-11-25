@@ -6,7 +6,9 @@ import { track } from "@/components/analytics";
 import { TrendChart } from "@/components/trend-chart";
 import { Notice, TrendBadge } from "@/components/ui";
 import { API_URL, type Claim, type Cluster, type Evidence, type RunResult } from "@/lib/api";
-import { clientId } from "@/lib/client-id";
+import { authHeaders } from "@/lib/account";
+import { loadSaved, saveBriefing, type SavedBriefing as Saved } from "@/lib/briefings";
+import { onArrived } from "@/lib/sync-events";
 import { pct } from "@/lib/format";
 
 const STEPS = [
@@ -32,23 +34,6 @@ const EXAMPLES = [
   "Compare graph neural networks and transformers for molecules",
 ];
 
-const SAVED_KEY = "sl_briefings_v1";
-type Saved = { q: string; at: number; result: RunResult };
-
-function loadSaved(): Saved[] {
-  try {
-    return JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-function saveBriefing(q: string, result: RunResult) {
-  try {
-    const list = [{ q, at: Date.now(), result }, ...loadSaved().filter((s) => s.q !== q)].slice(0, 8);
-    localStorage.setItem(SAVED_KEY, JSON.stringify(list));
-  } catch {}
-}
-
 type Phase = "idle" | "running" | "done" | "error";
 
 export function AskClient({ initial }: { initial: string }) {
@@ -66,7 +51,11 @@ export function AskClient({ initial }: { initial: string }) {
 
   useEffect(() => {
     const t = setTimeout(() => setSaved(loadSaved()), 0);
-    return () => clearTimeout(t);
+    const off = onArrived("briefings", () => setSaved(loadSaved()));
+    return () => {
+      clearTimeout(t);
+      off();
+    };
   }, []);
   useEffect(() => {
     if (phase !== "running") return;
@@ -89,7 +78,7 @@ export function AskClient({ initial }: { initial: string }) {
     try {
       const res = await fetch(`${API_URL}/api/runs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+        headers: await authHeaders(),
         body: JSON.stringify({ question }),
         signal: ctrl.signal,
       });

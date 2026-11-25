@@ -1,7 +1,7 @@
 // Researcher profiles: OpenAlex data plus an optional cited AI brief.
 
 import { API_URL } from "./api";
-import { clientId } from "./client-id";
+import { authHeaders } from "./account";
 
 export type Institution = { name: string; country: string | null; id: string };
 
@@ -87,10 +87,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const searchAuthors = (q: string) => req<{ results: AuthorSummary[] }>(`/api/authors?q=${encodeURIComponent(q)}`);
 export const fetchProfile = (id: string) => req<Profile>(`/api/authors/${encodeURIComponent(id)}`);
-export const fetchBrief = (id: string, idea: string, signal?: AbortSignal) =>
+export const fetchBrief = async (id: string, idea: string, signal?: AbortSignal) =>
   req<BriefResult>(`/api/authors/${encodeURIComponent(id)}/brief`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+    headers: await authHeaders(),
     body: JSON.stringify({ idea }),
     signal,
   });

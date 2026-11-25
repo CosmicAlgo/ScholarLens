@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@neon/auth": "^0.8.2",
     "next": "16.4.5",
     "pdfjs-dist": "6.3.289",
     "posthog-js": "^1.447.3",

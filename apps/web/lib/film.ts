@@ -1,8 +1,9 @@
 // Paper Film: a narrated scene-by-scene explainer of one paper, built from its own text.
 
 import { API_URL } from "./api";
-import { clientId } from "./client-id";
+import { authHeaders } from "./account";
 import type { DocPassage } from "./docstore";
+import { changed } from "./sync-events";
 
 export type FilmLine = { text: string; cites: string[]; page: number };
 export type FilmVisual =
@@ -31,7 +32,7 @@ export type Film = {
 export async function makeFilm(paper_id: string, title: string, passages?: DocPassage[], signal?: AbortSignal): Promise<Film> {
   const res = await fetch(`${API_URL}/api/film`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+    headers: await authHeaders(),
     body: JSON.stringify({ paper_id, title, passages: (passages || []).slice(0, 600).map((p) => ({ page: p.page, text: p.text.slice(0, 3900) })) }),
     signal,
   });
@@ -46,27 +47,42 @@ export async function makeFilm(paper_id: string, title: string, passages?: DocPa
   return res.json();
 }
 
-// Films are small; keep the last few on this device so reopening a paper replays instantly.
+// Films are small; keep the last few on this device so reopening a paper replays instantly
+// (and in the account, when signed in).
 const KEY = "sl_films_v1";
-type Saved = Record<string, { at: number; film: Film }>;
+export type SavedFilms = Record<string, { at: number; film: Film }>;
 
-export function savedFilm(id: string): Film | null {
+export function readFilms(): SavedFilms {
   try {
-    return (JSON.parse(localStorage.getItem(KEY) || "{}") as Saved)[id]?.film ?? null;
+    return JSON.parse(localStorage.getItem(KEY) || "{}") as SavedFilms;
   } catch {
-    return null;
+    return {};
   }
 }
 
-export function saveFilm(id: string, film: Film) {
+/** Keeps the 12 most recent. */
+export function writeFilms(all: SavedFilms) {
   try {
-    const all = JSON.parse(localStorage.getItem(KEY) || "{}") as Saved;
-    all[id] = { at: Date.now(), film };
     const keep = Object.entries(all)
       .sort((a, b) => b[1].at - a[1].at)
       .slice(0, 12);
     localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(keep)));
   } catch {}
+}
+
+export function mergeFilms(a: SavedFilms, b: SavedFilms): SavedFilms {
+  const out: SavedFilms = { ...b };
+  for (const [id, v] of Object.entries(a)) if (!out[id] || out[id].at < v.at) out[id] = v;
+  return out;
+}
+
+export function savedFilm(id: string): Film | null {
+  return readFilms()[id]?.film ?? null;
+}
+
+export function saveFilm(id: string, film: Film) {
+  writeFilms({ ...readFilms(), [id]: { at: Date.now(), film } });
+  changed("films");
 }
 
 export function filmScript(film: Film, paperTitle: string): string {
