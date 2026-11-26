@@ -161,12 +161,33 @@ function Shape({ n, b, tone }: { n: DiagramNode; b: Box; tone: (typeof TONE)[Dia
 
 export function FilmDiagram({ v, line, uid }: { v: DiagramVisual; line: number; uid: string }) {
   const pos = useMemo(() => layout(v), [v]);
+  // Zoom to the drawing itself (not the whole canvas), so two or three parts fill the stage.
+  const vb = useMemo(() => {
+    const boxes = [...pos.values()];
+    if (!boxes.length) return `0 0 ${W} ${H}`;
+    let x0 = Math.min(...boxes.map((b) => b.x)) - 40;
+    let x1 = Math.max(...boxes.map((b) => b.x + b.w)) + 40;
+    let y0 = Math.min(...boxes.map((b) => b.y)) - (v.layout === "split" ? 70 : 40);
+    const y1 = Math.max(...boxes.map((b) => b.y + b.h)) + 40;
+    if (v.layout === "split") {
+      x0 = Math.min(x0, 0);
+      x1 = Math.max(x1, W);
+      y0 = Math.min(y0, 10);
+    }
+    const minW = 560;
+    if (x1 - x0 < minW) {
+      const c = (x0 + x1) / 2;
+      x0 = c - minW / 2;
+      x1 = c + minW / 2;
+    }
+    return `${x0} ${y0} ${x1 - x0} ${y1 - y0}`;
+  }, [pos, v.layout]);
   const { visible, states, focus, flows } = stateAt(v, line);
   const reduced = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   return (
     <div className="h-full flex flex-col">
-      <svg viewBox={`0 0 ${W} ${H}`} className="flex-1 min-h-0 w-full" role="img" aria-label={`Diagram: ${v.nodes.map((n) => n.label).join(", ")}`}>
+      <svg viewBox={vb} className="flex-1 min-h-0 w-full" role="img" aria-label={`Diagram: ${v.nodes.map((n) => n.label).join(", ")}`}>
         <defs>
           <marker id={`${uid}-arrow`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="#8fb3e6" />
@@ -205,14 +226,22 @@ export function FilmDiagram({ v, line, uid }: { v: DiagramVisual; line: number; 
           return (
             <g key={id} opacity={gone ? 0.3 : 1}>
               <path id={id} d={d} className="dg-draw" stroke={carrying ? "#cfe0fb" : "#8fb3e6"} strokeWidth={carrying ? 3.5 : 2.5} fill="none" markerEnd={`url(#${uid}-arrow)`} strokeDasharray={gone ? "6 6" : undefined} />
-              {e.label && (
-                <g className="dg-fade">
-                  <rect x={(p.x + q.x) / 2 - e.label.length * 5.2 - 8} y={(p.y + q.y) / 2 - 15} width={e.label.length * 10.4 + 16} height={26} rx={7} fill="#0b0f1a" stroke="rgba(255,255,255,0.15)" />
-                  <text x={(p.x + q.x) / 2} y={(p.y + q.y) / 2 + 5} textAnchor="middle" fill="rgba(255,255,255,0.8)" fontSize={16}>
-                    {e.label}
-                  </text>
-                </g>
-              )}
+              {e.label &&
+                (() => {
+                  // Beside the arrow, not on it, so the moving dots never run under the words.
+                  const half = e.label.length * 5.4 + 8;
+                  const flat = Math.abs(q.x - p.x) >= Math.abs(q.y - p.y);
+                  const lx = (p.x + q.x) / 2 + (flat ? 0 : half + 10);
+                  const ly = (p.y + q.y) / 2 + (flat ? -24 : 0);
+                  return (
+                    <g className="dg-fade">
+                      <rect x={lx - half} y={ly - 14} width={half * 2} height={26} rx={7} fill="#0b0f1a" stroke="rgba(255,255,255,0.15)" />
+                      <text x={lx} y={ly + 5} textAnchor="middle" fill="rgba(255,255,255,0.85)" fontSize={16}>
+                        {e.label}
+                      </text>
+                    </g>
+                  );
+                })()}
               {carrying &&
                 (reduced ? (
                   <circle cx={(p.x + q.x) / 2} cy={(p.y + q.y) / 2} r={7} fill="#ffffff" />
