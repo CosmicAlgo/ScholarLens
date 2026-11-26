@@ -6,6 +6,7 @@ import { Working } from "@/components/verify/shared";
 import { getDoc } from "@/lib/docstore";
 import { type Film, type FilmScene, type FilmVisual, filmScript, makeFilm, savedFilm, saveFilm } from "@/lib/film";
 import type { OpenPaper } from "@/lib/workspace";
+import { FilmDiagram } from "./film-diagram";
 
 const FilmFigure = dynamic(() => import("./film-figure"), { ssr: false });
 
@@ -69,9 +70,10 @@ export function FilmView({
           </div>
           <div className="p-5 bg-surface">
             <p className="text-sm text-ink-2 leading-relaxed">
-              AI agents read the whole paper in parts, take notes, and direct a short narrated film of it: why it matters, the
-              idea, how it works, what they found and the limits, using the paper&rsquo;s own figures. Every spoken line cites
-              the page it comes from; lines and visuals that fail the checks are cut, and you can see what was cut.
+              AI agents read the whole paper in parts, take notes, and direct a narrated film that shows how it works:
+              animated diagrams of the problem and the method, built from the paper&rsquo;s own terms, plus its figures and
+              key numbers. Short papers get a quick story; long, complex ones get a chapter for each section. Every spoken
+              line cites the page it comes from; anything that fails the checks is cut, and you can see what was cut.
             </p>
             <button
               onClick={make}
@@ -88,8 +90,8 @@ export function FilmView({
             typical="Usually 1 to 3 minutes: the whole paper is read, not just the abstract."
             steps={[
               "Reader agents each read one part of the paper and take cited notes",
-              "A Director agent turns the notes into 6 to 9 scenes and picks a visual for each",
-              "The Verifier checks every line, number, quote and figure against the paper, in code",
+              "A Director agent turns the notes into scenes and draws the mechanism of each as an animated diagram",
+              "The Verifier checks every line, number, quote, figure and diagram label against the paper, in code",
             ]}
           />
         )}
@@ -115,6 +117,9 @@ function Player({
   const [scene, setScene] = useState(0);
   const [line, setLine] = useState(0);
   const [playing, setPlaying] = useState(false);
+  // The film opens on a title card; pressing play holds it a moment, then the first scene starts.
+  const [titleCard, setTitleCard] = useState(true);
+  const [opening, setOpening] = useState(false);
   const [voice, setVoice] = useState(true);
   const [rate, setRate] = useState(1);
   const [panel, setPanel] = useState<"chapters" | "script" | "checks">("chapters");
@@ -174,8 +179,26 @@ function Player({
   useEffect(() => () => void (canSpeak && speechSynthesis.cancel()), [canSpeak]);
 
   const go = (s: number) => {
+    setTitleCard(false);
     setScene(Math.max(0, Math.min(film.scenes.length - 1, s)));
     setLine(0);
+  };
+
+  const opener = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(opener.current), []);
+  const start = () => {
+    if (opening) {
+      clearTimeout(opener.current);
+      setOpening(false);
+      return;
+    }
+    if (!titleCard) return setPlaying((p) => !p);
+    setOpening(true);
+    opener.current = setTimeout(() => {
+      setTitleCard(false);
+      setOpening(false);
+      setPlaying(true);
+    }, 2600);
   };
 
   const removed = film.verification.removed;
@@ -197,14 +220,20 @@ function Player({
             className="film-glow absolute inset-0 pointer-events-none"
             style={{ background: `radial-gradient(70% 70% at ${20 + scene * 9}% 30%, rgba(57,135,229,0.28), transparent 70%)` }}
           />
+          {titleCard ? (
+            <div className="absolute inset-0 px-5 sm:px-10">
+              <Visual v={{ type: "title" }} film={film} paperTitle={paperTitle} file={file} line={0} uid="title" />
+            </div>
+          ) : (
+          <>
           <div className="absolute top-3 left-4 right-4 flex items-center gap-2 text-[0.7rem] uppercase tracking-[0.18em] text-white/60 z-10">
             <span className="font-mono">{String(scene + 1).padStart(2, "0")}</span>
-            <span>{KIND[sc.kind]}</span>
+            <span className="truncate">{sc.chapter || KIND[sc.kind]}</span>
           </div>
           <div key={scene} className="absolute inset-0 pt-10 pb-24 px-5 sm:px-10 flex flex-col">
             {sc.visual.type !== "title" && <h3 className="film-rise text-lg sm:text-2xl font-semibold leading-tight">{sc.heading}</h3>}
             <div className="flex-1 min-h-0 mt-3">
-              <Visual v={sc.visual} film={film} paperTitle={paperTitle} file={file} />
+              <Visual v={sc.visual} film={film} paperTitle={paperTitle} file={file} line={line} uid={`s${scene}`} />
             </div>
           </div>
           {/* Caption */}
@@ -223,9 +252,11 @@ function Player({
               </button>
             </p>
           </div>
-          {!playing && scene === 0 && line === 0 && (
+          </>
+          )}
+          {titleCard && !opening && (
             <button
-              onClick={() => setPlaying(true)}
+              onClick={start}
               className="absolute inset-0 grid place-items-center bg-black/25 hover:bg-black/15 transition-colors z-20"
               aria-label="Play the film"
             >
@@ -239,8 +270,8 @@ function Player({
           <button onClick={() => go(scene - 1)} className="tool-btn px-2" aria-label="Previous scene">
             ⏮
           </button>
-          <button onClick={() => setPlaying(!playing)} className="h-9 rounded-lg bg-accent text-white px-4 text-sm font-medium hover:opacity-90">
-            {playing ? "❚❚ Pause" : "▶ Play"}
+          <button onClick={start} className="h-9 rounded-lg bg-accent text-white px-4 text-sm font-medium hover:opacity-90">
+            {playing || opening ? "❚❚ Pause" : "▶ Play"}
           </button>
           <button onClick={() => go(scene + 1)} className="tool-btn px-2" aria-label="Next scene">
             ⏭
@@ -284,7 +315,8 @@ function Player({
         <p className="text-xs text-ink-3">
           Read {film.read.passages} passages in {film.read.parts} parts. {film.verification.lines_kept} narration lines, each traced to
           a page of the paper{removed.length > 0 ? `; ${removed.length} line(s) or visual(s) cut by the checks` : "; nothing had to be cut"}.
-          Narration is in the AI&rsquo;s own words; flows and bullet points marked &ldquo;sketch&rdquo; are its summary, not the paper&rsquo;s.
+          Narration is in the AI&rsquo;s own words. Diagram labels are the paper&rsquo;s own terms (anything else is cut); the
+          arrangement and animation are the AI&rsquo;s reading of the text. Bullet points marked &ldquo;sketch&rdquo; are its summary.
           {film.cached ? " (Cached film.)" : ""}
         </p>
 
@@ -321,6 +353,9 @@ function Player({
               <ol className="space-y-1">
                 {film.scenes.map((s, i) => (
                   <li key={i}>
+                    {s.chapter && s.chapter !== film.scenes[i - 1]?.chapter && (
+                      <p className="px-3 pt-2 pb-1 text-[0.68rem] font-semibold uppercase tracking-wider text-ink-3">{s.chapter}</p>
+                    )}
                     <button
                       onClick={() => go(i)}
                       className={`w-full text-left rounded-lg px-3 py-2 text-sm flex gap-3 ${i === scene ? "bg-accent-soft text-accent-ink" : "hover:bg-surface-2"}`}
@@ -328,7 +363,10 @@ function Player({
                       <span className="font-mono text-xs pt-0.5 w-5">{i + 1}</span>
                       <span className="flex-1">
                         <span className="font-medium">{s.heading}</span>
-                        <span className="block text-xs text-ink-3">{KIND[s.kind]}</span>
+                        <span className="block text-xs text-ink-3">
+                          {KIND[s.kind]}
+                          {s.visual.type === "diagram" ? " · animated diagram" : ""}
+                        </span>
                       </span>
                     </button>
                   </li>
@@ -362,7 +400,13 @@ function Player({
                   {removed.map((r, i) => (
                     <li key={i} className="rounded-lg bg-surface-2 p-2.5">
                       <span className="text-xs font-medium text-bad">
-                        {r.reason === "no_source" ? "Cut: cited nothing in the paper" : r.reason === "number_not_in_source" ? "Cut: a number the paper does not contain" : "Visual replaced: not found in the paper"}
+                        {r.reason === "no_source"
+                          ? "Cut: cited nothing in the paper"
+                          : r.reason === "number_not_in_source"
+                            ? "Cut: a number the paper does not contain"
+                            : r.reason === "label_not_in_paper"
+                              ? "Cut from a diagram: not the paper's terms"
+                              : "Visual replaced: not found in the paper"}
                       </span>
                       <p className="text-ink-2 mt-0.5">
                         {r.scene}: {r.text}
@@ -378,8 +422,24 @@ function Player({
   );
 }
 
-function Visual({ v, film, paperTitle, file }: { v: FilmVisual; film: Film; paperTitle: string; file: string | { data: Uint8Array } | null }) {
+function Visual({
+  v,
+  film,
+  paperTitle,
+  file,
+  line,
+  uid,
+}: {
+  v: FilmVisual;
+  film: Film;
+  paperTitle: string;
+  file: string | { data: Uint8Array } | null;
+  line: number;
+  uid: string;
+}) {
   switch (v.type) {
+    case "diagram":
+      return <FilmDiagram v={v} line={line} uid={uid} />;
     case "title":
       return (
         <div className="h-full grid place-items-center text-center">

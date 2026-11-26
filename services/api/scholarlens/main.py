@@ -530,7 +530,7 @@ async def paper_film(body: FilmRequest, x_client_id: str = Header(default="anony
         if not body.passages:
             raise HTTPException(422, "Uploaded documents need their passages.")
         passages = [{"id": f"S:{pid}:{i}", "page": x.page, "text": x.text} for i, x in enumerate(body.passages)]
-        key = _result_key("film", pid, str(len(passages)), passages[0]["text"][:200])
+        key = _result_key("film2", pid, str(len(passages)), passages[0]["text"][:200])
     else:
         if not await ingest.ensure_paper(pid):
             raise HTTPException(404, "Paper not found.")
@@ -539,7 +539,7 @@ async def paper_film(body: FilmRequest, x_client_id: str = Header(default="anony
                 409, "The full text of this paper is not openly available. Upload its PDF to make a film of it."
             )
         passages = await _paper_passages(pid)
-        key = _result_key("film", pid)
+        key = _result_key("film2", pid)
     if sum(len(p["text"]) for p in passages) < 3000:
         raise HTTPException(422, "There is too little text in this paper to make a film.")
     title = body.title.strip() or "this paper"
