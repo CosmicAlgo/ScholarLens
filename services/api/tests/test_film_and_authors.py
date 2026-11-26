@@ -116,3 +116,96 @@ def test_brief_drops_unsourced_statements_and_wrong_numbers():
     assert [p["text"] for p in out["overlap"]] == ["Your idea matches their 87% success rate."]
     assert [r["work"] for r in out["read_first"]] == ["W1"]
     assert {r["reason"] for r in ver["removed"]} == {"number_not_in_source", "no_source"}
+
+
+LEAK = {
+    "S:W2:0": {
+        "id": "S:W2:0",
+        "page": 2,
+        "text": "A memory leak occurs when objects on the heap stay reachable through a stale reference "
+        "but are never used again, so the heap keeps growing until the program crashes.",
+    },
+    "S:W2:1": {
+        "id": "S:W2:1",
+        "page": 4,
+        "text": "Our detector takes heap snapshots and reports objects whose counts grow across snapshots.",
+    },
+}
+
+
+def _diagram(nodes, edges=(), beats=(), layout="flow"):
+    return {
+        "type": "diagram",
+        "diagram": {
+            "layout": layout,
+            "nodes": [dict(n) for n in nodes],
+            "edges": [dict(e) for e in edges],
+            "beats": [dict(b) for b in beats],
+        },
+    }
+
+
+def test_diagram_keeps_only_the_papers_own_terms():
+    board = film.Storyboard(
+        title="T",
+        logline="L",
+        scenes=[
+            _scene(
+                [
+                    {"text": "A leak keeps objects reachable that are never used again.", "cites": ["S:W2:0"]},
+                    {"text": "So the heap keeps growing.", "cites": ["S:W2:0"]},
+                ],
+                _diagram(
+                    nodes=[
+                        {"id": "prog", "label": "Program"},
+                        {"id": "heap", "label": "Heap", "shape": "store"},
+                        {"id": "obj", "label": "Stale reference"},
+                        {"id": "gc", "label": "Garbage collector"},  # never mentioned in the paper
+                    ],
+                    edges=[
+                        {"src": "prog", "dst": "heap", "label": "allocates"},  # label not in the paper
+                        {"src": "obj", "dst": "heap", "label": "reachable"},
+                        {"src": "gc", "dst": "heap", "label": ""},
+                    ],
+                    beats=[
+                        {"line": 0, "show": ["prog", "obj", "gc"], "flows": ["obj>heap", "gc>heap"]},
+                        {"line": 7, "states": [{"id": "heap", "state": "growing"}]},
+                    ],
+                ),
+            )
+        ],
+    )
+    out = film.verify(board, LEAK, [])
+    v = out["scenes"][0]["visual"]
+    assert v["type"] == "diagram"
+    assert [n["label"] for n in v["nodes"]] == ["Program", "Heap", "Stale reference"]
+    assert v["edges"] == [
+        {"src": "prog", "dst": "heap", "label": ""},
+        {"src": "obj", "dst": "heap", "label": "reachable"},
+    ]
+    assert v["beats"][0]["show"] == ["prog", "obj"] and v["beats"][0]["flows"] == ["obj>heap"]
+    assert v["beats"][1]["line"] == 1  # clamped to the last narration line
+    cut = {r["text"] for r in out["verification"]["removed"]}
+    assert {"diagram label: Garbage collector", "diagram label: allocates"} <= cut
+
+
+def test_diagram_with_too_few_grounded_parts_falls_back():
+    board = film.Storyboard(
+        title="T",
+        logline="L",
+        scenes=[
+            _scene(
+                [{"text": "The detector compares heap snapshots.", "cites": ["S:W2:1"]}],
+                _diagram(nodes=[{"id": "a", "label": "Neural planner"}, {"id": "b", "label": "Snapshots"}]),
+            )
+        ],
+    )
+    v = film.verify(board, LEAK, [])["scenes"][0]["visual"]
+    assert v["type"] == "points" and v["sketch"] is False
+
+
+def test_only_long_papers_get_chapters():
+    short = [{"id": f"S:{i}", "page": 1, "text": "x" * 1000} for i in range(30)]
+    long = [{"id": f"S:{i}", "page": 1, "text": "x" * 1000} for i in range(130)]
+    assert not film.complex_paper(short, [])
+    assert film.complex_paper(long, [])

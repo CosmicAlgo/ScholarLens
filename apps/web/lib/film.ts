@@ -6,7 +6,22 @@ import type { DocPassage } from "./docstore";
 import { changed } from "./sync-events";
 
 export type FilmLine = { text: string; cites: string[]; page: number };
+export type DiagramState = "normal" | "problem" | "fixed" | "growing" | "gone";
+export type DiagramNode = { id: string; label: string; shape: "box" | "actor" | "store" | "data" | "process"; side: "" | "left" | "right" };
+export type DiagramEdge = { src: string; dst: string; label: string };
+export type DiagramBeat = { line: number; show: string[]; focus: string[]; states: { id: string; state: DiagramState }[]; flows: string[] };
+export type DiagramVisual = {
+  type: "diagram";
+  layout: "flow" | "stack" | "cycle" | "split";
+  left_title: string;
+  right_title: string;
+  nodes: DiagramNode[];
+  edges: DiagramEdge[];
+  beats: DiagramBeat[];
+  page: number;
+};
 export type FilmVisual =
+  | DiagramVisual
   | { type: "title" }
   | { type: "figure"; label: string; caption: string; page: number; cite: string }
   | { type: "stat"; value: string; label: string; cite: string; page: number }
@@ -15,11 +30,15 @@ export type FilmVisual =
   | { type: "flow" | "points"; items: string[]; sketch: boolean };
 export type FilmScene = {
   kind: "intro" | "problem" | "idea" | "method" | "result" | "limits" | "takeaway";
+  /** Chapters format: the paper's section this scene covers. */
+  chapter?: string;
   heading: string;
   lines: FilmLine[];
   visual: FilmVisual;
 };
 export type Film = {
+  /** "arc" = short story; "chapters" = follows the paper's sections (long, complex papers). */
+  format?: "arc" | "chapters";
   title: string;
   logline: string;
   scenes: FilmScene[];
