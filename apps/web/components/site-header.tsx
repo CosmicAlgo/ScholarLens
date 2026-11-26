@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import "@/lib/copilot-run"; // answers keep streaming (and resume) on every page
 import { isAnswering, useWorkspace } from "@/lib/store";
+import { AccountMenu } from "./account-menu";
 import { Wordmark } from "./brand";
 
 const NAV = [
@@ -81,6 +82,8 @@ export function HeaderShell({ path }: { path: string }) {
             <span aria-hidden="true">→</span>
           </Link>
         )}
+
+        <AccountMenu />
 
         <button
           className="md:hidden -mr-1 w-10 h-10 grid place-items-center rounded-lg hover:bg-surface-2"

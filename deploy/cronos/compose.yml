@@ -18,6 +18,8 @@ services:
       OMP_NUM_THREADS: "2"
       # Campus Wi-Fi puts many users behind one IP; the global daily budgets still cap total cost.
       AI_CALLS_PER_IP_PER_DAY: "300"
+      # Optional accounts: the production branch's Neon Auth URL (public; the API only checks tokens against it).
+      NEON_AUTH_URL: "https://ep-steep-forest-za9vt4zp.neonauth.c-2.eu-west-2.aws.neon.tech/neondb/auth"
     mem_limit: 6g
     expose:
       - "8000"

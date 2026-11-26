@@ -41,6 +41,7 @@ from .agents.llm import AgentError, make_llm
 from .config import get_settings
 from .db import close_pool, open_pool, pool
 from .guard import GuardMiddleware, allow_smart_search
+from .me import router as me_router
 from .search import get_paper, search_with_coverage
 
 log = logging.getLogger("scholarlens")
@@ -55,11 +56,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ScholarLens API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(GuardMiddleware)
+app.include_router(me_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-Client-Id"],
+    allow_headers=["Content-Type", "X-Client-Id", "Authorization"],
 )
 
 

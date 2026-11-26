@@ -1,7 +1,7 @@
 // Client for the verification tools: Citation Check, Claim Court, Citation Telephone.
 
 import { API_URL } from "./api";
-import { clientId } from "./client-id";
+import { authHeaders } from "./account";
 
 export type CitingPaper = {
   s2: string | null;
@@ -102,7 +102,7 @@ export type RefCheckResult = {
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+    headers: await authHeaders(),
     body: JSON.stringify(body),
     signal,
   });

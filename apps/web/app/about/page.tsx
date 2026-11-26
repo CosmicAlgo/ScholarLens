@@ -111,7 +111,14 @@ export default function About() {
       <section id="privacy">
         <h2 className="text-xl font-semibold">Privacy</h2>
         <ul className="mt-2 list-disc pl-5 text-ink-2 space-y-1">
-          <li>No account is needed. We don&rsquo;t ask for your name or email.</li>
+          <li>No account is needed. Everything works signed out, and then we don&rsquo;t ask for your name or email.</li>
+          <li>
+            If you choose to sign in (email code or Google), we keep your email and name, and store your workspace (open
+            papers, notes, highlights, reading list, Copilot chat), saved Briefings and Films with your account so they
+            appear on every device. Uploaded PDFs are never synced: they stay in each browser. Sign-in is run by Neon Auth,
+            and the data sits in our Neon database in London. You can delete your synced data from the account menu at any
+            time, and on a shared computer choose &ldquo;Sign out and remove from this browser&rdquo;.
+          </li>
           <li>
             Your browser gets a random ID so we can apply the daily limit on AI briefings. Questions you ask are stored
             with that ID to monitor cost and quality.
@@ -146,8 +153,8 @@ export default function About() {
             you can&rsquo;t share with Google&rsquo;s free AI tier.
           </li>
           <li>
-            To keep it free for everyone there are daily limits on AI features, per browser and per network, plus a request
-            rate limit. Reading, search, trends and the citation map are not limited in the same way.
+            To keep it free for everyone there are daily limits on AI features, per browser and per network (or per account
+            when you&rsquo;re signed in, so a shared campus network doesn&rsquo;t share one allowance), plus a request rate limit. Reading, search, trends and the citation map are not limited in the same way.
           </li>
           <li>Instructions hidden inside papers are treated as text to analyse, never as commands to the assistant.</li>
           <li>

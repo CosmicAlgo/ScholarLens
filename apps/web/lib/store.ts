@@ -58,7 +58,8 @@ export function whenRestored(fn: (s: WorkspaceState) => void) {
   } else onLoad.push(fn);
 }
 
-function subscribe(cb: () => void) {
+/** Every change to the workspace (sync listens here). */
+export function subscribe(cb: () => void) {
   subs.add(cb);
   return () => {
     subs.delete(cb);

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { fetchTrending } from "../trending-now";
+import { useAccount } from "@/lib/account";
 import { exportWorkspace, importWorkspace } from "@/lib/backup";
 import { ScreenDeck } from "./screen";
 import type { Interpretation, Paper, Trend } from "@/lib/api";
@@ -285,7 +286,7 @@ export function Library({
       )}
       {tab === "search" && (
         <div className="shrink-0 border-t border-line px-3 py-2 flex items-center gap-2 text-[0.68rem] text-ink-3">
-          <span className="flex-1 leading-snug">Your workspace and PDFs are saved in this browser only.</span>
+          <SavedWhere />
           <button
             onClick={async () => {
               const r = await exportWorkspace();
@@ -402,3 +403,14 @@ function Pulse({ t }: { t: Trend }) {
 }
 
 export type { OpenPaper };
+
+function SavedWhere() {
+  const a = useAccount();
+  return (
+    <span className="flex-1 leading-snug">
+      {a.status === "signed_in"
+        ? "Synced to your account. Uploaded PDFs stay in this browser."
+        : "Your workspace and PDFs are saved in this browser only."}
+    </span>
+  );
+}

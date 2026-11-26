@@ -5,6 +5,8 @@
   will, so the per-client quota alone cannot stop a script; the IP cap can. (Caddy overwrites
   X-Forwarded-For, and the API is reachable only through Caddy, so the IP cannot be spoofed.)
 - A request body limit, so nobody can post huge payloads.
+- Signed-in users (a valid Neon Auth token) are counted by account instead of by IP, so a whole
+  campus behind one IP does not share one cap. Their quota id replaces the browser's client id.
 - AI_PAUSED=true turns every AI endpoint off at once (a kill switch) without touching anything else.
 
 Counters live in memory: the API is one process, and a restart resetting them is acceptable.
@@ -18,6 +20,7 @@ from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from . import accounts
 from .config import get_settings
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -51,14 +54,14 @@ def is_ai_call(request: Request) -> bool:
     return p.startswith(AI_PATHS) and not p.endswith("/cancel")
 
 
-def _count_ai(ip: str) -> bool:
+def _count_ai(key: str, cap: int) -> bool:
     today = date.today()
     if _day["d"] != today:
         _day["d"] = today
         _daily.clear()
-    if _daily[ip] >= get_settings().ai_calls_per_ip_per_day:
+    if _daily[key] >= cap:
         return False
-    _daily[ip] += 1
+    _daily[key] += 1
     return True
 
 
@@ -78,6 +81,18 @@ class GuardMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS" or request.url.path.startswith("/health"):
             return await call_next(request)
         ip = client_ip(request)
+        user = None
+        token = accounts.bearer(request.headers.get("authorization"))
+        if token:
+            try:
+                user = await accounts.verify(token)
+            except accounts.InvalidToken:
+                return JSONResponse({"detail": "Your sign-in has expired. Please sign in again."}, status_code=401)
+            # Quotas downstream read X-Client-Id; for a signed-in user that is their account.
+            request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"x-client-id"] + [
+                (b"x-client-id", user.quota_id.encode())
+            ]
+        request.state.user = user
         if not _rate_ok(ip):
             return JSONResponse({"detail": "Too many requests. Please slow down for a minute."}, status_code=429)
         if request.method == "POST":
@@ -92,9 +107,20 @@ class GuardMiddleware(BaseHTTPMiddleware):
                     {"detail": "AI features are paused for maintenance. Reading and search still work."},
                     status_code=503,
                 )
-            if not _count_ai(ip):
+            s = get_settings()
+            if user is not None:
+                if not _count_ai(user.quota_id, s.ai_calls_per_user_per_day):
+                    return JSONResponse(
+                        {"detail": "You've reached today's AI limit for your account. It resets at midnight UTC."},
+                        status_code=429,
+                    )
+            elif not _count_ai(ip, s.ai_calls_per_ip_per_day):
                 return JSONResponse(
-                    {"detail": "Daily AI limit reached for your network. It resets at midnight UTC."}, status_code=429
+                    {
+                        "detail": "Daily AI limit reached for your network. Sign in to get your own allowance, "
+                        "or try again after midnight UTC."
+                    },
+                    status_code=429,
                 )
         return await call_next(request)
 

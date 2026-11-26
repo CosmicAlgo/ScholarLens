@@ -1,7 +1,7 @@
 // Workspace state, persistence (per browser) and the streaming Copilot client.
 
 import { API_URL, type Paper } from "./api";
-import { clientId } from "./client-id";
+import { authHeaders } from "./account";
 import type { DocPassage } from "./docstore";
 
 export type Mode = "ask" | "explain" | "critique" | "brainstorm" | "related" | "compare" | "verify";
@@ -154,14 +154,38 @@ export function loadState(): WorkspaceState {
   }
 }
 
+/** What is kept of a workspace on disk and in sync: the last 40 messages, without figure images. */
+export function persistable(s: WorkspaceState): WorkspaceState {
+  const messages = s.messages.slice(-40).map((m) =>
+    m.role === "user" && m.selection?.image ? { ...m, selection: { ...m.selection, image: undefined, figure: true } } : m,
+  );
+  return { ...s, messages };
+}
+
 export function saveState(s: WorkspaceState) {
   try {
-    // Figure images are large: keep only the fact that one was sent.
-    const messages = s.messages.slice(-40).map((m) =>
-      m.role === "user" && m.selection?.image ? { ...m, selection: { ...m.selection, image: undefined, figure: true } } : m,
-    );
-    localStorage.setItem(KEY, JSON.stringify({ ...s, messages }));
+    localStorage.setItem(KEY, JSON.stringify(persistable(s)));
   } catch {}
+}
+
+const byId = <T extends { id: string }>(a: T[], b: T[]) => [...a, ...b.filter((x) => !a.some((y) => y.id === x.id))];
+
+/** Combine two workspaces without losing work: `cur` wins where both have something (a restored
+ * backup, or a device's copy meeting the account's copy for the first time). */
+export function mergeWorkspace(cur: WorkspaceState, inc: Partial<WorkspaceState>): WorkspaceState {
+  const recent = byId(cur.recent, inc.recent || []).sort((a, b) => b.at - a.at).slice(0, 30);
+  return {
+    ...cur,
+    papers: byId(cur.papers, inc.papers || []).slice(-5),
+    activeId: cur.activeId ?? inc.activeId ?? null,
+    page: { ...(inc.page || {}), ...cur.page },
+    highlights: byId(cur.highlights, inc.highlights || []),
+    queue: byId(cur.queue, inc.queue || []),
+    recent,
+    matrix: { ...(inc.matrix || {}), ...cur.matrix },
+    figures: { ...(inc.figures || {}), ...cur.figures },
+    messages: cur.messages.length ? cur.messages : (inc.messages || []).map((m) => (m.role === "assistant" ? { ...m, done: true } : m)),
+  };
 }
 
 export const pdfUrl = (id: string) => `${API_URL}/api/papers/${id}/pdf`;
@@ -184,7 +208,7 @@ async function errorText(res: Response, fallback: string) {
 export async function extractRow(paper_id: string, title: string, passages?: DocPassage[]): Promise<MatrixRow> {
   const res = await fetch(`${API_URL}/api/extract`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+    headers: await authHeaders(),
     body: JSON.stringify({ paper_id, title, passages: passages || [] }),
   });
   if (!res.ok) throw new Error(await errorText(res, "Could not extract this paper."));
@@ -198,7 +222,7 @@ export async function readFigures(
 ): Promise<FigureItem[]> {
   const res = await fetch(`${API_URL}/api/figures`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": clientId() },
+    headers: await authHeaders(),
     body: JSON.stringify({ paper_id, title, images: images || [] }),
   });
   if (!res.ok) throw new Error(await errorText(res, "Could not read the figures."));
@@ -292,9 +316,10 @@ export async function askCopilot(
   cur: RunCursor,
   onRun: (id: string) => void,
 ) {
-  const headers = { "Content-Type": "application/json", "X-Client-Id": clientId() };
   for (let attempt = 0; ; attempt++) {
     try {
+      // Fresh each attempt: a sign-in token lives 15 minutes and a run can outlast it.
+      const headers = await authHeaders();
       const res =
         cur.runId || !body
           ? await fetch(`${API_URL}/api/copilot/${cur.runId}/stream?after=${cur.last + 1}`, { headers, signal })
@@ -313,7 +338,7 @@ export async function askCopilot(
 
 export async function cancelRun(runId: string) {
   try {
-    await fetch(`${API_URL}/api/copilot/${runId}/cancel`, { method: "POST", headers: { "X-Client-Id": clientId() } });
+    await fetch(`${API_URL}/api/copilot/${runId}/cancel`, { method: "POST", headers: await authHeaders(false) });
   } catch {}
 }
 
